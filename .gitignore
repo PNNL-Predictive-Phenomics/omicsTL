@@ -1,0 +1,64 @@
+##########################
+# Project-specific files
+
+# keep all .gitkeep files
+!.gitkeep
+
+/data/
+
+##########################
+# Common files
+
+# Byte-compiled / optimized / DLL files
+__pycache__/
+*.py[cod]
+
+# Installer logs
+pip-log.txt
+pip-delete-this-directory.txt
+
+# Unit test / coverage reports
+htmlcov/
+.tox/
+.coverage
+.coverage.*
+.cache
+nosetests.xml
+coverage.xml
+*.cover
+
+# PyBuilder
+target/
+build/
+*.egg-info/
+
+# VS Code
+.vscode/
+# .devcontainer/
+.github/
+
+# Mac OS-specific storage files
+.DS_Store
+
+# Jupyter NB Checkpoints
+.ipynb_checkpoints/
+
+# vim
+*.swp
+*.swo
+
+# Mypy cache
+.mypy_cache/
+
+# Misc
+*logs/
+.Rproj.user
+plots/
+cov_html/
+
+# R
+.Rhistory
+.Rproj.user/
+
+
+

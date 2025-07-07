@@ -1,0 +1,297 @@
+---
+title: "Untitled"
+format: html
+jupyter: python3
+---
+
+```{python}
+import os
+import re
+import pandas as pd
+import pickle
+from pathlib import Path
+from tqdm import tqdm
+import glob
+
+def combine_csv_files(directory_path):
+    file_pattern = os.path.join(directory_path, "*.csv")
+    csv_files = glob.glob(file_pattern)
+    
+    if not csv_files:
+        return pd.DataFrame()
+    
+    dfs = []
+    
+    for file_path in tqdm(csv_files, desc="Reading results"):
+        try:
+            df = pd.read_csv(file_path)
+            dfs.append(df)
+        except Exception as e:
+            pass
+    
+    if dfs:
+        combined_df = pd.concat(dfs, ignore_index=True)
+        return combined_df
+    else:
+        return pd.DataFrame()
+```
+
+```{python}
+dataset = "full"
+path = f"./data/results/{dataset}/"
+
+results = combine_csv_files(path)
+results
+```
+
+
+```{r}
+library(stringr)
+library(dplyr)
+
+dataset = "full"
+
+if(file.exists(here::here("data", "simulated_data", paste0(dataset, "_scenario_data.csv")))){
+  result <- readRDS(here::here("data", "simulated_data", paste0(dataset, "_scenario_data.rds")))
+} else {
+  files <- list.files(path = here::here("data", "simulated_data", dataset), pattern = "sim_info_.*\\.RDS$", full.names = TRUE)
+  data_list <- lapply(files, function(f) {
+    data <- readRDS(f)
+    replicate_scenario <- str_match(f, "sim_info_(\\d+)_(\\w+)\\.RDS")
+    data %>%
+      mutate(replicate = replicate_scenario[ , 2], scenario = replicate_scenario[ , 3])
+  })
+  result <- bind_rows(data_list)
+  saveRDS(result, here::here("data", "simulated_data", paste0(dataset, "_scenario_data.rds")))
+}
+
+#todo: need to convert functions in result to string I think
+```
+
+```{r}
+library(tidyverse)
+path = "./data/results/full"
+
+combine_csv_files <- function(directory_path) {
+  csv_files <- list.files(path = directory_path, pattern = "\\.csv$", full.names = TRUE)
+  
+  if (length(csv_files) == 0) {
+    return(data.frame())
+  }
+  
+  df_list <- list()
+  
+  pb <- txtProgressBar(min = 0, max = length(csv_files), style = 3)
+  for (i in seq_along(csv_files)) {
+    tryCatch({
+      df_list[[i]] <- read.csv(csv_files[i])
+    }, error = function(e) {
+      # Silently continue if there's an error
+    })
+    setTxtProgressBar(pb, i)
+  }
+  close(pb)
+  
+  if (length(df_list) > 0) {
+    combined_df <- bind_rows(df_list)  # Use dplyr::bind_rows() instead of rbind
+    return(combined_df)
+  } else {
+    return(data.frame())
+  }
+}
+
+
+results = combine_csv_files(path)
+results = results %>% 
+	mutate(
+		scenario = as.numeric(scenario),
+		replicate = as.numeric(replicate)
+		) %>%
+	left_join(
+		result %>% mutate(scenario = as.numeric(scenario), replicate = as.numeric(replicate)), 
+		by = c("scenario", "replicate")
+		)
+```
+
+```{r}
+response_fns = results$response_fn_source %>% unique
+
+results = results %>% 
+  select(
+	-dropout,
+	-hidden_dim_size,
+	-source_epochs,
+	-target_epochs,
+	-freeze,
+	-z_dim
+  ) %>%
+  mutate(
+    response_fn_source = ifelse(sapply(response_fn_source, \(x) identical(x, response_fns[[1]])), "simple", "complex"),
+    response_fn_target = ifelse(sapply(response_fn_target, \(x) identical(x, response_fns[[1]])), "simple", "complex"),
+	num_features = pmax(num_features_source, num_features_target, 1),
+	prop_features = round(num_features / pmax(num_samples_source, num_samples_target), 1)
+  )
+```
+
+```{r}
+rf_results_targetonly = results |> filter(
+	model == "rf" & model_id == "target_only"
+) |> mutate(
+	mae = ifelse(is.na(mae), -Inf, mae),
+	mcc = ifelse(is.na(mae), -Inf, mcc),
+) |> mutate(
+	mae = case_when(
+		model_type == "pred_0" ~ mae,
+		model_type == "pred_1" ~ NA,
+		model_type == "pred_2" ~ NA,
+		model_type == "pred_3" ~ NA,
+		model_type == "pred_ensemble" ~ NA
+	),
+	mcc = case_when(
+		model_type == "pred_0" ~ mcc,
+		model_type == "pred_1" ~ NA,
+		model_type == "pred_2" ~ NA,
+		model_type == "pred_3" ~ NA,
+		model_type == "pred_ensemble" ~ NA
+	)
+) |> fill(
+	mae,
+	.direction = "down"
+) |> fill(
+	mcc,
+	.direction = "down"
+) |> mutate(
+	mae = ifelse(mae == -Inf, NA, mae),
+	mcc = ifelse(mae == -Inf, NA, mcc),
+	model_id = ifelse(model_id == "target_only", "target_nosource", model_id)
+)
+# pull out model 0 for target only random forest, and add it to the source + target random forest models
+```
+
+```{r}
+results = results |> filter(
+	model != "rf" | model_id != "target_only"
+)
+```
+
+```{r}
+results = rbind(
+	results,
+	rf_results_targetonly
+)
+```
+
+```{r}
+response_fns = results$response_fn_source %>% unique
+
+metric = 'mcc'
+snr_target_vec = c(0.5, 2)
+snr_source_vec = c(0.5, 2)
+prop_features_vec = c(0.5, 2)
+response_fn_source_vec = c('simple', 'complex')
+
+params = expand.grid(
+	snr_target = snr_target_vec,
+	snr_source = snr_source_vec,
+	prop_features = prop_features_vec,
+	response_fn_source = response_fn_source_vec
+)
+
+for(param_idx in seq_len(nrow(params))){
+	snr_target_val = params$snr_target[param_idx]
+	snr_source_val = params$snr_source[param_idx]
+	prop_features_val = params$prop_features[param_idx]
+	response_fn_source_val = params$response_fn_source[param_idx]
+
+	p = results %>% filter(
+	snr_target == snr_target_val,
+	snr_source == snr_source_val,
+	prop_features == prop_features_val,
+	response_fn_source == response_fn_source_val,
+	model_id != 'source',
+	model_type != "pred_ensemble" & model_type != "pred_0",
+	split == "test_0"
+	) %>%
+	ggplot(
+		aes(
+		x = as.factor(num_samples_source),
+		y = mcc,
+		color = model_id
+		)
+	) + 
+	geom_boxplot() +
+	facet_grid(model_type ~ num_samples_target) + 
+	theme_bw() + 
+	ggtitle(
+		paste0(
+			"Source SNR = ", snr_source_val, "\n",
+			"Target SNR = ", snr_target_val, "\n",
+			"Num Features / Sample Size = ", prop_features_val, "\n",
+			"Response Type = ", response_fn_source_val, "\n"
+		)
+	) + 
+	xlab("Source Sample Size")
+
+	plot_name = paste0(paste(metric, snr_source_val, snr_target_val, prop_features_val, response_fn_source_val, sep = '_'), '.png')
+
+	ggsave(here::here("plots", plot_name), p)
+}
+```
+
+
+```{r}
+response_fns = results$response_fn_source %>% unique
+
+metric = 'mae'
+snr_target_vec = c(0.5, 2)
+snr_source_vec = c(0.5, 2)
+prop_features_vec = c(0.5, 2)
+response_fn_source_vec = c('simple', 'complex')
+
+params = expand.grid(
+	snr_target = snr_target_vec,
+	snr_source = snr_source_vec,
+	prop_features = prop_features_vec,
+	response_fn_source = response_fn_source_vec
+)
+
+for(param_idx in seq_len(nrow(params))){
+	snr_target_val = params$snr_target[param_idx]
+	snr_source_val = params$snr_source[param_idx]
+	prop_features_val = params$prop_features[param_idx]
+	response_fn_source_val = params$response_fn_source[param_idx]
+
+	p = results %>% filter(
+	snr_target == snr_target_val,
+	snr_source == snr_source_val,
+	prop_features == prop_features_val,
+	response_fn_source == response_fn_source_val,
+	model_id != 'source',
+	model_type != "pred_ensemble" & model_type != "pred_0",
+	split == "test_0"
+	) %>%
+	ggplot(
+		aes(
+		x = as.factor(num_samples_source),
+		y = mae,
+		color = model_id
+		)
+	) + 
+	geom_boxplot() +
+	facet_grid(model_type ~ num_samples_target) + 
+	theme_bw() + 
+	ggtitle(
+		paste0(
+			"Source SNR = ", snr_source_val, "\n",
+			"Target SNR = ", snr_target_val, "\n",
+			"Num Features / Sample Size = ", prop_features_val, "\n",
+			"Response Type = ", response_fn_source_val, "\n"
+		)
+	) + 
+	xlab("Source Sample Size")
+
+	plot_name = paste0(paste(metric, snr_source_val, snr_target_val, prop_features_val, response_fn_source_val, sep = '_'), '.png')
+
+	ggsave(here::here("plots", plot_name), p)
+}
+```

@@ -1,0 +1,1072 @@
+"""Utilities for training and evaluating transfer learning models."""
+
+import logging
+from dataclasses import dataclass
+from typing import Any, NamedTuple
+
+import numpy as np
+import pandas as pd
+from sklearn.model_selection import KFold, LeaveOneOut, ParameterGrid, StratifiedKFold
+from torch import device
+
+from omicsTL.simulation_utils.data_utils import DatasetContainer
+from omicsTL.transfer_forest import TransferForest
+from omicsTL.transfer_networks import TransferMLP, TransferVAE
+
+logger = logging.getLogger(__name__)
+
+# Constants for metric optimization
+MINIMIZE_METRICS = ["rmse", "mae"]
+DEFAULT_REGRESSION_METRIC = "rmse"
+DEFAULT_CLASSIFICATION_METRIC = "acc"
+DEFAULT_LOO_CLASSIFICATION_METRIC = "acc"
+
+
+@dataclass
+class EvaluationContext:
+    """Context for model evaluation with metadata."""
+
+    scenario: int
+    replicate: int
+    split_name: str
+    model_type: str
+    hyperparams: dict[str, Any]
+
+
+@dataclass
+class DataPartition:
+    """Container for training data."""
+
+    features: pd.DataFrame
+    response: pd.Series
+
+
+@dataclass
+class CVFoldData:
+    """Container for cross-validation fold data."""
+
+    train: DataPartition
+    validation: DataPartition
+    early_stopping: DataPartition | None = None
+    fold_idx: int = 0
+
+    def get_training_dict(self) -> dict[str, DataPartition | None]:
+        return {"training": self.train, "early_stopping": self.early_stopping}
+
+
+@dataclass
+class ModelConfig:
+    """Configuration for model creation and training."""
+
+    model_type: str
+    hyperparams: dict[str, Any]
+    is_classification: bool
+    torch_device: device
+    output_dim: int
+
+
+class TuningResult(NamedTuple):
+    """Result of hyperparameter tuning."""
+
+    best_params: dict[str, Any]
+    results: pd.DataFrame
+
+
+def create_results_df() -> pd.DataFrame:
+    """Create an empty DataFrame with columns for model evaluation results."""
+    return pd.DataFrame(
+        columns=[
+            "scenario",
+            "replicate",
+            "split",
+            "model",
+            "model_type",
+            "model_id",
+            "rmse",
+            "mae",
+            "acc",
+            "f1",
+            "mcc",
+            "precision",
+            "recall",
+        ],
+    )
+
+
+def calculate_metrics(
+    true_values: pd.Series | np.ndarray,
+    predicted_values: pd.Series | np.ndarray,
+    is_classification: bool,
+) -> dict[str, float]:
+    """Calculate evaluation metrics for model predictions.
+
+    Args:
+    true_values: Ground truth values
+    predicted_values: Model predictions
+    is_classifiction: Is the model a classification model
+
+    Returns:
+    Dictionary containing calculated metrics
+
+    """
+    from sklearn.metrics import (
+        accuracy_score,
+        f1_score,
+        matthews_corrcoef,
+        mean_absolute_error,
+        mean_squared_error,
+        precision_score,
+        recall_score,
+        roc_auc_score,
+    )
+
+    metrics: dict[str, float] = {}
+
+    # Convert to numpy arrays if they're pandas Series
+    if isinstance(true_values, pd.Series):
+        true_values = true_values.to_numpy()
+    if isinstance(predicted_values, pd.Series):
+        predicted_values = predicted_values.to_numpy()
+
+    metrics["rmse"] = np.nan
+    metrics["mae"] = np.nan
+    metrics["acc"] = np.nan
+    metrics["f1"] = np.nan
+    metrics["mcc"] = np.nan
+    metrics["precision"] = np.nan
+    metrics["recall"] = np.nan
+        
+    if is_classification:
+        predicted_classes = np.array([2 if x >= 0.5 else 1 for x in predicted_values])
+
+        unique_classes = np.unique(true_values)
+        metrics["acc"] = float(accuracy_score(true_values, predicted_classes))
+        metrics["roc_auc"] = float(roc_auc_score(true_values, predicted_values))
+
+        if len(unique_classes) > 1:
+            metrics["f1"] = float(f1_score(true_values, predicted_classes))
+            metrics["precision"] = float(precision_score(true_values, predicted_classes, zero_division=0))
+            metrics["recall"] = float(recall_score(true_values, predicted_classes, zero_division=0))
+            metrics["mcc"] = float(matthews_corrcoef(true_values, predicted_classes))
+        
+        return metrics
+
+    metrics["rmse"] = float(np.sqrt(mean_squared_error(true_values, predicted_values)))
+    metrics["mae"] = float(mean_absolute_error(true_values, predicted_values))
+
+    return metrics
+
+
+def create_model(config: ModelConfig) -> TransferMLP | TransferVAE:
+    """Create a model instance based on configuration.
+
+    Args:
+    config: Model configuration
+
+    Returns:
+    Initialized model instance
+
+    """
+    logger.debug("Creating model. Formating parameters:")
+    dropout = config.hyperparams.get("dropout", 0.2)
+    hidden_dim_base = int(config.hyperparams.get("hidden_dim_base", 12))
+    z_dim_base = int(config.hyperparams.get("z_dim_base", 12))
+    n_latent_dims = int(config.hyperparams.get("n_latent_dims", 2))
+    hidden_sizes = [hidden_dim_base * 2 * (i + 1) for i in range(int(n_latent_dims) - 1)]
+    hidden_sizes.reverse()
+    logger.debug("dropout: %s", dropout)
+    logger.debug("hidden_dim_base: %s", hidden_dim_base)
+    logger.debug("z_dim_base: %s", z_dim_base)
+    logger.debug("n_latent_dims: %s", n_latent_dims)
+    logger.debug("hidden_sizes: %s", hidden_sizes)
+
+    if config.model_type == "mult_mlp":
+        model = TransferMLP(
+            hidden_sizes=[hidden_sizes],
+            dropout=dropout,
+            hidden_dim=hidden_dim_base,
+        )
+    elif config.model_type == "mult_vae":
+        model = TransferVAE(
+            hidden_sizes=[hidden_sizes],
+            dropout=dropout,
+            hidden_dim=hidden_dim_base,
+            z_dim=z_dim_base,
+        )
+    else:
+        logger.error("Unknown model type: %s", config.model_type)
+        raise ValueError
+
+    if config.is_classification:
+        model.with_classification()
+    else:
+        model.with_regression()
+
+    return model
+
+
+def convert_parameter_types(params: dict[str, Any]) -> dict[str, Any]:
+    """Convert parameters to their correct types.
+
+    Args:
+    params: Dictionary of parameters that may have NumPy types
+
+    Returns:
+    Dictionary with parameters converted to Python native types
+
+    """
+    param_types = {
+        "hidden_dim_size": int,
+        "source_epochs": int,
+        "target_epochs": int,
+        "z_dim": int,
+        "dropout": float,
+    }
+
+    converted_params = {}
+    for key, value in params.items():
+        if key in param_types:
+            converted_params[key] = param_types[key](value)
+        else:
+            converted_params[key] = value
+
+    return converted_params
+
+
+def evaluate_model(
+    model: TransferMLP | TransferVAE,
+    data: DataPartition,
+    model_id: str,
+    context: EvaluationContext,
+    is_classification: bool,
+) -> pd.DataFrame:
+    """Evaluate a model and create a results row.
+
+    Args:
+    model: Model to evaluate
+    data: Data for evaluation
+    model_id: ID to use when generating predictions ("source" or "target")
+    context: Evaluation context with metadata
+    is_classification: is the model a classification model
+
+    Returns:
+    DataFrame with a single row containing evaluation results
+
+    """
+    predictions = model.__getattribute__(model_id).predict([data.features])
+    metrics = calculate_metrics(data.response, predictions, is_classification)
+
+    results_row = {
+        "scenario": context.scenario,
+        "replicate": context.replicate,
+        "split": context.split_name,
+        "model": context.model_type,
+        "model_type": context.model_type,
+        "model_id": model_id,
+        **metrics,
+        **context.hyperparams,
+    }
+
+    return pd.DataFrame([results_row])
+
+
+def train_model(
+    model: TransferMLP | TransferVAE,
+    data: dict[str, DataPartition],
+    config: ModelConfig,
+    model_id: str,
+    source_model: str | None = None,
+    lr: float = 0.001,
+    gamma: float = 2,
+    weight_decay: float = 1e-4,
+) -> None:
+    """Train a model on the provided data.
+
+    Args:
+    model: Model to train
+    data: Training data
+    config: Model configuration
+    model_id: ID to use for the model ("source" or "target")
+    source_model: Name of source model for transfer learning
+    lr: learning rate
+
+    """
+    train_data = data["training"]
+    early_stopping_data = data["early_stopping"]
+    try:
+        model.set_model_dims([train_data.features], config.output_dim)
+    except Exception:
+        logger.exception("Error setting model dimensions")
+
+    if source_model:
+        model.create_model(model_id, source_model=source_model, device=config.torch_device, lr=lr)
+
+        if model_id == "target" and config.hyperparams.get("freeze") == "marginal" and hasattr(model, "target"):
+            target_container = getattr(model, "target")
+            target_container.model.freeze_marginal_layers()
+    else:
+        model.create_model(model_id, device=config.torch_device, lr=lr, weight_decay=weight_decay)
+
+    epochs_key = "target_epochs" if "target" in model_id else "source_epochs"
+    epochs = config.hyperparams.get(epochs_key, 1000)
+
+    model.train_model(
+        model_id,
+        train_views=[train_data.features],
+        y_train=train_data.response,
+        epochs=epochs,
+        verbose=True,
+        test_views=[early_stopping_data.features] if early_stopping_data else None,
+        y_test=early_stopping_data.response if early_stopping_data else None,
+        gamma=config.hyperparams.get("gamma"),
+    )
+
+
+def create_cv_folds(
+    feature_matrix: pd.DataFrame,
+    response_values: pd.Series,
+    n_splits: int,
+) -> list[CVFoldData]:
+    """Create cross-validation folds from the data.
+
+    Args:
+    feature_matrix: Feature data
+    response_values: Response data
+    n_splits: Number of CV folds (will be adjusted for small datasets)
+
+    Returns:
+    List of CV fold data
+
+    """
+    is_classification = response_values.dtype == np.int64
+
+    if is_classification:
+        class_counts = response_values.value_counts()
+        min_class_count = class_counts.min()
+        if min_class_count < n_splits:
+            logger.info("Insufficient samples for stratification, using Leave-One-Out cross-validation")
+            cv_splitter = LeaveOneOut()
+        else:
+            logger.info("Using stratified %s-fold cross-validation", n_splits)
+            cv_splitter = StratifiedKFold(n_splits=n_splits, shuffle=True, random_state=42)
+    else:
+        logger.info("Using regular %s-fold cross-validation", n_splits)
+        cv_splitter = KFold(n_splits=n_splits, shuffle=True, random_state=42)
+
+    cv_folds = []
+    for fold_idx, (train_idx, val_idx) in enumerate(cv_splitter.split(feature_matrix, response_values)):
+        train_features = feature_matrix.iloc[train_idx]
+        val_features = feature_matrix.iloc[val_idx]
+        train_response = response_values.iloc[train_idx]
+        val_response = response_values.iloc[val_idx]
+
+        fold_data = CVFoldData(
+            train=DataPartition(features=train_features, response=train_response),
+            validation=DataPartition(features=val_features, response=val_response),
+            fold_idx=fold_idx,
+        )
+
+        cv_folds.append(fold_data)
+
+    if not cv_folds:
+        logger.warning("No valid CV folds could be created, using all data for both training and validation")
+        fold_data = CVFoldData(
+            train=DataPartition(features=feature_matrix, response=response_values),
+            validation=DataPartition(features=feature_matrix, response=response_values),
+            fold_idx=0,
+        )
+        cv_folds.append(fold_data)
+
+    logger.info("Created %s cross-validation folds", len(cv_folds))
+    return cv_folds
+
+
+def aggregate_fold_metrics(fold_metrics: list[dict[str, Any]]) -> dict[str, Any]:
+    """Aggregate metrics across folds.
+
+    Args:
+    fold_metrics: List of metric dictionaries from each fold
+
+    Returns:
+    Dictionary with averaged metrics
+
+    """
+    if not fold_metrics:
+        return {}
+
+    fold_df = pd.DataFrame(fold_metrics)
+
+    numeric_cols = fold_df.select_dtypes(include=np.number).columns.tolist()
+    non_numeric_cols = [col for col in fold_df.columns if col not in numeric_cols and col != "fold"]
+
+    mean_metrics = fold_df[numeric_cols].mean().to_dict()
+
+    for col in non_numeric_cols:
+        mean_metrics[col] = fold_df[col].iloc[0]
+
+    return mean_metrics
+
+
+def select_best_parameters(
+    results: pd.DataFrame,
+    param_grid: dict[str, list[Any]],
+    metric: str,
+) -> dict[str, Any]:
+    """Select the best parameters based on the specified metric.
+
+    Args:
+    results: DataFrame with aggregated metrics
+    param_grid: Parameter grid used for tuning
+    metric: Metric to optimize
+
+    Returns:
+    Dictionary with best parameters
+
+    """
+    if results.empty:
+        return {}
+
+    param_cols = list(param_grid.keys())
+
+    if metric in results.columns and not results[metric].isna().all():
+        best_idx = results[metric].idxmin() if metric in MINIMIZE_METRICS else results[metric].idxmax()
+        best_val = results[metric].min() if metric in MINIMIZE_METRICS else results[metric].max()
+        best_params = {k: results.loc[best_idx, k] for k in param_cols}
+        print(f"Best parameter combination found. Metric {metric} with value {best_val}")
+        print(best_params)
+        print(results[metric])
+    else:
+        logger.warning("All %s values are NaN, using first parameter combination", metric)
+        if len(results) > 0:
+            best_params = {k: results.iloc[0][k] for k in param_cols}
+        else:
+            return {}
+
+    return convert_parameter_types(best_params)
+
+
+def _create_loo_folds(
+    feature_matrix: pd.DataFrame,
+    response_values: pd.Series,
+) -> list[CVFoldData]:
+    cv_splitter = LeaveOneOut()
+    all_folds = list(cv_splitter.split(feature_matrix, response_values))
+
+    cv_folds = []
+    for val_fold_idx, (train_indices, val_indices) in enumerate(all_folds):
+        np.random.seed(42 + val_fold_idx)
+        early_stop_indices = np.random.choice(train_indices, size=1, replace=False)
+
+        train_indices = np.array([idx for idx in train_indices if idx not in early_stop_indices])
+
+        train_features = feature_matrix.iloc[train_indices]
+        train_response = response_values.iloc[train_indices]
+
+        val_features = feature_matrix.iloc[val_indices]
+        val_response = response_values.iloc[val_indices]
+
+        early_stop_features = feature_matrix.iloc[early_stop_indices]
+        early_stop_response = response_values.iloc[early_stop_indices]
+
+        fold_data = CVFoldData(
+            train=DataPartition(features=train_features, response=train_response),
+            validation=DataPartition(features=val_features, response=val_response),
+            early_stopping=DataPartition(features=early_stop_features, response=early_stop_response),
+            fold_idx=val_fold_idx,
+        )
+
+        cv_folds.append(fold_data)
+
+    return cv_folds
+
+
+def _create_kfold_folds(
+    feature_matrix: pd.DataFrame,
+    response_values: pd.Series,
+    cv_splitter,
+) -> list[CVFoldData]:
+    all_folds = list(cv_splitter.split(feature_matrix, response_values))
+    n_actual_splits = len(all_folds)
+
+    cv_folds = []
+    for val_fold_idx in range(n_actual_splits):
+        _, val_indices = all_folds[val_fold_idx]
+
+        early_stop_fold_idx = (val_fold_idx + 1) % n_actual_splits
+        _, early_stop_indices = all_folds[early_stop_fold_idx]
+
+        train_indices = []
+        for i in range(n_actual_splits):
+            if i != val_fold_idx and i != early_stop_fold_idx:
+                train_indices.extend(all_folds[i][1])
+
+        train_features = feature_matrix.iloc[train_indices]
+        train_response = response_values.iloc[train_indices]
+
+        val_features = feature_matrix.iloc[val_indices]
+        val_response = response_values.iloc[val_indices]
+
+        early_stop_features = feature_matrix.iloc[early_stop_indices]
+        early_stop_response = response_values.iloc[early_stop_indices]
+
+        fold_data = CVFoldData(
+            train=DataPartition(features=train_features, response=train_response),
+            validation=DataPartition(features=val_features, response=val_response),
+            early_stopping=DataPartition(features=early_stop_features, response=early_stop_response),
+            fold_idx=val_fold_idx,
+        )
+
+        cv_folds.append(fold_data)
+
+    return cv_folds
+
+
+def create_k_minus_2_cv_folds(
+    feature_matrix: pd.DataFrame,
+    response_values: pd.Series,
+    n_splits: int,
+) -> list[CVFoldData]:
+    if n_splits < 3:
+        logger.warning("n_splits must be at least 3 for k-2 fold CV, setting to 3")
+        n_splits = 3
+
+    is_classification = response_values.dtype == np.int64
+    n_samples = feature_matrix.shape[0]
+
+    if n_samples < n_splits:
+        cv_folds = _create_loo_folds(feature_matrix, response_values)
+    elif is_classification:
+        class_counts = response_values.value_counts()
+        min_class_count = class_counts.min()
+        if min_class_count < n_splits:
+            logger.info("Insufficient samples for stratification, using Leave-One-Out cross-validation")
+            cv_folds = _create_loo_folds(feature_matrix, response_values)
+        else:
+            logger.info("Using stratified %s-fold cross-validation for k-2 CV", n_splits)
+            cv_splitter = StratifiedKFold(n_splits=n_splits, shuffle=True, random_state=42)
+            cv_folds = _create_kfold_folds(feature_matrix, response_values, cv_splitter)
+    else:
+        logger.info("Using regular %s-fold cross-validation for k-2 CV", n_splits)
+        cv_splitter = KFold(n_splits=n_splits, shuffle=True, random_state=42)
+        cv_folds = _create_kfold_folds(feature_matrix, response_values, cv_splitter)
+
+    if not cv_folds:
+        # TODO: Maybe there is a better alternative exception
+        logger.warning("No valid CV folds could be created, using all data for all partitions")
+        fold_data = CVFoldData(
+            train=DataPartition(features=feature_matrix, response=response_values),
+            validation=DataPartition(features=feature_matrix, response=response_values),
+            early_stopping=DataPartition(features=feature_matrix, response=response_values),
+            fold_idx=0,
+        )
+        cv_folds.append(fold_data)
+
+    logger.info("Created %s cross-validation folds using k-2 split strategy", len(cv_folds))
+    return cv_folds
+
+
+def tune_model_cv(
+    data_partition: DataPartition,
+    model_type: str,
+    output_dim: int,
+    torch_device: device,
+    param_grid: dict[str, list[Any]],
+    n_splits: int = 5,
+    metric: str | None = None,
+) -> dict[str, Any]:
+    """Tune model hyperparameters using cross-validation on the provided data partition.
+
+    Args:
+    data_partition: Data partition to use for tuning
+    model_type: Type of model to tune ("mult_mlp" or "mult_vae")
+    torch_device: Torch device to train model using
+    param_grid: Dictionary of parameter names and values to search
+    n_splits: Number of CV folds (will be adjusted for small datasets)
+    metric: Performance metric to optimize
+
+    Returns:
+    Dictionary of best parameters
+
+    """
+    is_classification = data_partition.response.dtype == np.int64
+
+    if is_classification and len(np.unique(data_partition.response)) <= 1:
+        logger.warning("Only one class present in the entire dataset, metrics will be undefined")
+        return {}
+
+    cv_folds = create_k_minus_2_cv_folds(data_partition.features, data_partition.response, n_splits)
+
+    using_loo = any(len(fold.validation.features) == 1 for fold in cv_folds)
+
+    if metric is None:
+        if is_classification:
+            metric = DEFAULT_LOO_CLASSIFICATION_METRIC if using_loo else DEFAULT_CLASSIFICATION_METRIC
+        else:
+            metric = DEFAULT_REGRESSION_METRIC
+
+    logger.info("Using %s as optimization metric", metric)
+
+    results = pd.DataFrame()
+    param_combinations = list(ParameterGrid(param_grid))
+    logger.info("Tuning over %s parameter combinations", len(param_combinations))
+
+    for param_idx, hyperparams in enumerate(param_combinations):
+        logger.debug("Evaluating parameter combination %s/%s", param_idx + 1, len(param_combinations))
+        fold_metrics = []
+
+        for fold_data in cv_folds:
+            config = ModelConfig(
+                model_type=model_type,
+                hyperparams=hyperparams,
+                is_classification=is_classification,
+                torch_device=torch_device,
+                output_dim=output_dim,
+            )
+
+            model = create_model(config)
+            train_model(
+                model=model,
+                data=fold_data.get_training_dict(),
+                config=config,
+                model_id="source",
+                lr=config.hyperparams.get("lr", 0.01),
+                weight_decay=hyperparams.get("weight_decay", 0.01),
+            )
+
+            predictions = model.source.predict([fold_data.validation.features])
+
+            metrics = calculate_metrics(fold_data.validation.response, predictions, is_classification)
+            metrics.update(hyperparams)
+            metrics["fold"] = fold_data.fold_idx
+
+            fold_metrics.append(metrics)
+
+        if fold_metrics:
+            mean_metrics = aggregate_fold_metrics(fold_metrics)
+            results = pd.concat([results, pd.DataFrame([mean_metrics])], ignore_index=True)
+
+    if results.empty:
+        logger.warning("No successful parameter combinations found, returning defaults")
+        return {}
+
+    best_params = select_best_parameters(results, param_grid, metric)
+    logger.info("Best parameters found: %s", best_params)
+    return best_params
+
+
+def get_feature_columns(data: pd.DataFrame, response_id: str) -> list[str]:
+    """Extract feature column names from dataset.
+
+    Args:
+    data: DataFrame containing features and response
+    response_id: String identifier for response column in data.
+
+    Returns:
+    List of feature column names
+
+    """
+    return [col for col in data.columns if col != response_id]
+
+
+def split_dataframe_indices(
+    df: pd.DataFrame,
+    first_split_proportion: float = 0.8,
+    random_state: int | None = None,
+) -> tuple[list[int], list[int]]:
+    """Split row indices of a pandas DataFrame into two sets based on a proportion.
+
+    Args:
+    df: The pandas DataFrame to split indices from.
+    first_split_proportion: Proportion of indices to include in the first set (0.0-1.0).
+    random_state: Optional random seed for reproducibility.
+
+    Returns:
+    A tuple containing two lists of indices: (first_indices, second_indices).
+
+    """
+    if not 0 <= first_split_proportion <= 1:
+        msg = "first_split_proportion must be between 0.0 and 1.0"
+        raise ValueError(msg)
+
+    all_indices = df.index.tolist()
+
+    indices = np.array(all_indices)
+
+    if random_state is not None:
+        np.random.seed(random_state)
+
+    np.random.shuffle(indices)
+
+    split_idx = int(len(indices) * first_split_proportion)
+
+    if len(indices) > 0:
+        split_idx = max(1, min(split_idx, len(indices) - 1))
+
+    first_indices = indices[:split_idx].tolist()
+    second_indices = indices[split_idx:].tolist()
+
+    return first_indices, second_indices
+
+
+def create_data_partition(
+        data: pd.DataFrame,
+        feature_cols: list[str],
+        response_id: str,
+        row_ids: list | None = None
+) -> DataPartition:
+    """Create a data partition from a DataFrame.
+
+    Args:
+                                    data: DataFrame containing features and response
+                                    feature_cols: List of feature column names
+                                    row_ids: Optional list of row indices to subset the data. If None, uses all data.
+
+    Returns:
+                                    DataPartition object
+
+    """
+    subset_data = data.loc[row_ids] if row_ids else data
+
+    return DataPartition(
+        features=subset_data[feature_cols],
+        response=subset_data[response_id],
+    )
+
+
+def fit_dl_model(
+    data_container: DatasetContainer,
+    model_type: str,
+    torch_device: device,
+    param_grid: dict[str, float | bool | str] | None = None,
+    **kwargs: float | str,
+) -> pd.DataFrame:
+    """Fit a deep learning model with optional hyperparameter tuning via cross-validation.
+
+    Args:
+                                                                    data_container: Container with source and target data
+                                                                    model_type: Type of model to fit ("mult_mlp" or "mult_vae")
+                                                                    torch_device: Torch device for deep learning
+                                                                    param_grid: Dictionary of parameter grids for tuning
+                                                                    **kwargs: Parameters for the model if not tuning
+
+    Returns:
+                                                                    DataFrame with model evaluation results
+
+    """
+    results = create_results_df()
+
+    if not data_container.id_tuple:
+        msg = "data_container contains null id_tuple"
+        raise AttributeError(msg)
+    replicate, scenario = data_container.id_tuple
+
+    response_id = data_container.response_id
+    is_classification = data_container.is_classification()
+
+    feature_cols = get_feature_columns(
+        data_container.source_data,
+        response_id=response_id,
+    )
+
+    # Create source partitions
+    source_train_samples, source_validation_samples = split_dataframe_indices(data_container.source_data, 0.9)
+
+    source_train_partition = create_data_partition(
+        data=data_container.source_data,
+        feature_cols=feature_cols,
+        response_id=response_id,
+        row_ids=source_train_samples,
+    )
+
+    source_validation_partition = create_data_partition(
+        data=data_container.source_data,
+        feature_cols=feature_cols,
+        response_id=response_id,
+        row_ids=source_validation_samples,
+    )
+
+    # Create target partitions
+    target_train_samples, target_validation_samples = split_dataframe_indices(data_container.target_data, 0.9)
+
+    target_full = create_data_partition(
+        data=data_container.target_data,
+        feature_cols=feature_cols,
+        response_id=response_id,
+    )
+
+    target_train_partition = create_data_partition(
+        data=data_container.target_data,
+        feature_cols=feature_cols,
+        response_id=response_id,
+        row_ids=target_train_samples,
+    )
+
+    target_validation_partition = create_data_partition(
+        data=data_container.target_data,
+        feature_cols=feature_cols,
+        response_id=response_id,
+        row_ids=target_validation_samples,
+    )
+
+    source_partition = {"training": source_train_partition, "early_stopping": source_validation_partition}
+    target_partition = {"training": target_full, "early_stopping": None}
+    target_partition_nosource = {"training": target_train_partition, "early_stopping": target_validation_partition}
+
+    output_dim = data_container.source_data[response_id].nunique() if is_classification else 1
+
+    if param_grid is not None:
+        logger.info("Tuning parameters using source data")
+        best_params = tune_model_cv(
+            data_partition=source_train_partition,
+            model_type=model_type,
+            output_dim=output_dim,
+            torch_device=torch_device,
+            param_grid=param_grid,
+        )
+
+        if best_params:
+            kwargs.update(best_params)
+            logger.debug("Source hyperparameter tuning complete with parameters: %s", best_params)
+
+        logger.info("Tuning parameters using target data")
+        best_params_nosource = tune_model_cv(
+            data_partition=target_train_partition,
+            model_type=model_type,
+            output_dim=output_dim,
+            torch_device=torch_device,
+            param_grid=param_grid,
+        )
+
+        if best_params_nosource:
+            logger.debug("Target hyperparameter tuning complete with parameters: %s", best_params_nosource)
+
+    # Source + target model
+    logger.debug("Training transfer model")
+
+    hyperparams = {
+        "dropout": kwargs.get("dropout", 0.2),
+        "hidden_dim_base": kwargs.get("hidden_dim_base", 12),
+        "n_latent_dims": kwargs.get("n_latent_dims", 2),
+        "source_epochs": kwargs.get("source_epochs", 1000),
+        "target_epochs": kwargs.get("target_epochs", 1000),
+        "freeze": kwargs.get("freeze", "none"),
+        "z_dim_base": kwargs.get("z_dim_base", 12),
+        "lr": kwargs.get("lr", 1e-4),
+        "weight_decay": kwargs.get("weight_decay", 1e-4),
+        "gamma": kwargs.get("gamma", 2),
+    }
+    logger.debug("Using hyperparameters: %s", hyperparams)
+
+    config = ModelConfig(
+        model_type=model_type,
+        hyperparams=hyperparams,
+        is_classification=is_classification,
+        torch_device=torch_device,
+        output_dim=output_dim,
+    )
+    model = create_model(config)
+
+    logger.info("Creating and training model on source domain")
+    train_model(
+        model=model,
+        data=source_partition,
+        config=config,
+        model_id="source",
+        lr=hyperparams.get("lr", 0.01),
+        gamma=hyperparams.get("gamma", 2),
+        weight_decay=hyperparams.get("weight_decay", 0.01),
+    )
+
+    if not hasattr(data_container, "target_data") or data_container.target_data is None:
+        logger.warning("No target data found, returning early")
+        return results
+
+    logger.info("Transferring to target domain")
+    train_model(
+        model=model,
+        data=target_partition,
+        config=config,
+        model_id="target",
+        source_model="source",
+        lr=hyperparams.get("lr", 0.01),
+        gamma=hyperparams.get("gamma", 2),
+        weight_decay=hyperparams.get("weight_decay", 0.01),
+    )
+
+    # Target only model
+    logger.debug("Training transfer model")
+
+    hyperparams_nosource = {
+        "dropout": best_params_nosource.get("dropout", 0.2),
+        "hidden_dim_base": best_params_nosource.get("hidden_dim_base", 12),
+        "n_latent_dims": best_params_nosource.get("n_latent_dims", 2),
+        "source_epochs": best_params_nosource.get("source_epochs", 1000),
+        "target_epochs": best_params_nosource.get("target_epochs", 1000),
+        "freeze": best_params_nosource.get("freeze", "none"),
+        "z_dim_base": best_params_nosource.get("z_dim_base", 12),
+        "lr": best_params_nosource.get("lr", 1e-4),
+        "weight_decay": best_params_nosource.get("weight_decay", 1e-4),
+        "gamma": best_params_nosource.get("gamma", 2),
+    }
+    logger.debug("Using hyperparameters: %s", hyperparams_nosource)
+
+    config_nosource = ModelConfig(
+        model_type=model_type,
+        hyperparams=hyperparams_nosource,
+        is_classification=is_classification,
+        torch_device=torch_device,
+        output_dim=output_dim,
+    )
+    model_nosource = create_model(config_nosource)
+    train_model(
+        model=model_nosource,
+        data=target_partition_nosource,
+        config=config_nosource,
+        model_id="target_nosource",
+        lr=best_params_nosource.get("lr", 0.01),
+        gamma=best_params_nosource.get("gamma", 2),
+        weight_decay=best_params_nosource.get("weight_decay", 0.01),
+    )
+
+    if not hasattr(data_container, "target_test_data") or not data_container.target_test_data:
+        logger.warning("No test data found, returning early")
+        return results
+
+    for i, test_dataset in enumerate(data_container.target_test_data):
+        logger.info("Evaluating on test set %s", i + 1)
+        test_data = create_data_partition(
+            data=test_dataset,
+            response_id=response_id,
+            feature_cols=feature_cols,
+        )
+
+        test_context = EvaluationContext(
+            scenario=scenario,
+            replicate=replicate,
+            split_name=f"test_{i}",
+            model_type=model_type,
+            hyperparams=hyperparams,
+        )
+        test_results = evaluate_model(model=model, data=test_data, model_id="target", context=test_context, is_classification=is_classification)
+        logger.info(f"Transfer results: {test_results}")
+        results = pd.concat([results, test_results], ignore_index=True)
+
+        test_context = EvaluationContext(
+            scenario=scenario,
+            replicate=replicate,
+            split_name=f"test_{i}",
+            model_type=model_type,
+            hyperparams=hyperparams_nosource,
+        )
+        test_results = evaluate_model(
+            model=model_nosource,
+            data=test_data,
+            model_id="target_nosource",
+            context=test_context,
+            is_classification=is_classification,
+        )
+        logger.info(f"No transfer results: {test_results}")
+        results = pd.concat([results, test_results], ignore_index=True)
+
+    return results, model, model_nosource
+
+
+def fit_rf_model(
+    data_container: DatasetContainer,
+) -> pd.DataFrame:
+    """Fit a random forest transfer learning model.
+
+    Args:
+                                    data_container: Container with source and target data
+
+    Returns:
+                                    DataFrame with model evaluation results
+
+    """
+    logger.info("Starting random forest model fitting")
+    results = create_results_df()
+    replicate, scenario = data_container.id_tuple
+    response_id = data_container.response_id
+    logger.info(f"Processing scenario: {scenario}, replicate: {replicate}")
+
+    is_classification = data_container.is_classification()
+    logger.info(f"Task type: {'Classification' if is_classification else 'Regression'}")
+
+    feature_cols = get_feature_columns(
+        data=data_container.source_data,
+        response_id=response_id,
+    )
+    logger.info(f"Using {len(feature_cols)} features for modeling")
+
+    source_data = create_data_partition(
+        data=data_container.source_data,
+        response_id=response_id,
+        feature_cols=feature_cols,
+    )
+    target_data = create_data_partition(
+        data=data_container.target_data,
+        response_id=response_id,
+        feature_cols=feature_cols,
+    )
+    logger.info(f"Source data shape: {source_data.features.shape}, Target data shape: {target_data.features.shape}")
+
+    logger.info("Initializing TransferForest model")
+    transfer_forest = TransferForest()
+    if is_classification:
+        transfer_forest.with_classification()
+        logger.info("Set model for classification task")
+    else:
+        transfer_forest.with_regression()
+        logger.info("Set model for regression task")
+
+    logger.info("Training model on source data")
+    transfer_forest.train_models(
+        views=[source_data.features],
+        response=source_data.response,
+    )
+
+    logger.info("Updating model with target data")
+    transfer_forest.update_models(
+        views=[target_data.features],
+        response=target_data.response,
+    )
+
+    if hasattr(data_container, "target_test_data") and data_container.target_test_data:
+        logger.info(f"Found {len(data_container.target_test_data)} test datasets")
+        for i, test_dataset in enumerate(data_container.target_test_data):
+            logger.info(f"Processing test dataset {i + 1}/{len(data_container.target_test_data)}")
+            test_data = create_data_partition(
+                data=test_dataset,
+                response_id=response_id,
+                feature_cols=feature_cols,
+            )
+            logger.info(f"Test data {i} shape: {test_data.features.shape}")
+
+            test_predictions = transfer_forest.generate_predictions(
+                views=[test_data.features],
+                response=test_data.response,
+                validation_views=[test_data.features],
+                validation_response=test_data.response,
+                integration_type=TransferForest.IntegrationType.NONE,
+            )
+
+            if not test_predictions:
+                logger.warning(f"Empty predictions returned for test data {i}")
+
+            test_predictions = test_predictions[0]
+            for model_type, prediction in test_predictions.items():
+                logger.info(f"Calculating metrics for test data {i} with model type: {model_type}")
+                test_metrics = calculate_metrics(test_data.response, prediction, is_classification)
+                test_row = {
+                    "scenario": scenario,
+                    "replicate": replicate,
+                    "split": f"test_{i}",
+                    "model": "rf",
+                    "model_type": f"{model_type}",
+                    "model_id": "target",
+                    **test_metrics,
+                }
+                results = pd.concat([results, pd.DataFrame([test_row])], ignore_index=True)
+
+    logger.info(f"Model fitting completed. Results shape: {results.shape}")
+    return results, transfer_forest
