@@ -75,7 +75,7 @@ setup(
     name="omicstl",
     packages=find_packages(where="src", exclude=["tests"]),
     package_dir={'': 'src'},
-    package_data={'': ['**/*.R']},
+    package_data={'': ['**/*.R', '**/*.tar.gz']},
     include_package_data=True,
     version=get_version("src/omicstl/__init__.py"),
     long_description=long_description,

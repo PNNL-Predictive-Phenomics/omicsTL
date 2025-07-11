@@ -1,5 +1,37 @@
 # omicsTL
 
+## Environment Setup
+
+### Docker
+
+The easiest way to start with the package is to use the Docker container.
+
+```bash
+docker build . -t omicstl
+docker run -it omicstl /bin/bash
+```
+
+### Dev Container
+
+If you are using Visual Studio Code, there is also a Dev Container config included for use with the Dev Containers extension.
+To activate it, press Ctrl+Shift+P/Cmd+Shift+P and select `Dev Containers: Reopen in Container`.
+
+### Local Setup
+
+Local setup is not recommended due to the tight dependencies required by the package, but if you need to run it locally, make sure the following are installed:
+
+```
+Python == 3.12
+  setuptools
+  wheel
+
+R >= 4.2.0
+  BiocManager==3.20
+```
+
+Note that the package will install a number of additional packages which may not be compatible with other packages you have installed.
+For this reason, you will likely want to run this inside a virtual environment for Python and use a custom library path for R using the R_LIBS_USER environment variable.
+
 ## Installation
 
 The package can be installed by cloning the repository, navigating to the cloned directory, and installing via pip:
@@ -11,8 +43,6 @@ pip install .
 # Install in development mode
 pip install -e .
 ```
-
-Since this package requires some tricky versioning between R, Python, and package dependancies, we also provide a docker container.
 
 ## Vignettes
 

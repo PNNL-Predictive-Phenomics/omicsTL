@@ -265,13 +265,13 @@ data_generator_wrapper <- function(
 	thresh <- cut_point
   } else {
 	if (any(names(response_parameters) %in% "ncats")) {
-		ncats <- as.numeric(response_parameters[names(response_parameters) %in% "ncats"])
+		ncats <- as.numeric(response_parameters[["ncats"]])
 	} else {
 		ncats <- NULL
 	}
 
 	if (any(names(response_parameters) %in% "quantile")) {
-		thresh <- response_parameters[names(response_parameters) %in% "quantile"]
+		thresh <- response_parameters[["quantile"]]
 	} else {
 		thresh <- NULL
 	}
@@ -906,6 +906,10 @@ dat_generator <- function(source_data,
 response_generator <- function(data, func, SNR,
                                ncats = NULL,
                                thresh = NULL){
+
+  print(SNR)
+  print(ncats)
+  print(thresh)
 
   # uncorrupted signal
   pure_y <- func(data)
