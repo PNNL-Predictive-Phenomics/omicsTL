@@ -15,9 +15,9 @@ import pandas as pd
 from torch import device
 from tqdm import tqdm
 
-from omicsTL.simulation_utils.data_utils import DatasetContainer, DatasetManager
-from omicsTL.simulation_utils.model_utils import fit_dl_model, fit_rf_model
-from omicsTL.transfer_forest import load_r_functions
+from omicstl.simulation_utils.data_utils import DatasetContainer, DatasetManager
+from omicstl.simulation_utils.model_utils import fit_dl_model, fit_rf_model
+from omicstl.transfer_forest import load_r_functions
 
 # Create main logger
 logger = logging.getLogger(__name__)
@@ -48,7 +48,7 @@ def setup_logging(log_file: str | None = None) -> None:
         root_logger.addHandler(file_handler)
 
     for name in logging.root.manager.loggerDict:
-        if name.startswith("omicsTL."):
+        if name.startswith("omicstl."):
             module_logger = logging.getLogger(name)
             module_logger.propagate = True
             module_logger.handlers = []
@@ -296,7 +296,7 @@ def main() -> None:
         else:
             logger.info("Using default parameters")
     else:
-        from omicsTL.transfer_forest import load_r_functions
+        from omicstl.transfer_forest import load_r_functions
 
         load_r_functions("../..")
 

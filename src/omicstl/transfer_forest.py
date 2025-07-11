@@ -9,8 +9,8 @@ from rpy2.robjects.packages import importr
 from rpy2.robjects.vectors import FactorVector, FloatVector
 from sklearn.linear_model import LinearRegression
 
-from omicsTL.r_utils import df2pd, pd2df
-from omicsTL.deep_learning_utils import PredictionMode
+from omicstl.r_utils import df2pd, pd2df
+from omicstl.deep_learning_utils import PredictionMode
 
 logger = logging.getLogger(__name__)
 
@@ -21,7 +21,7 @@ def load_r_functions(path: str = "..") -> None:
     """
     logger.info("Initializing R environment")
     base = importr("base")
-    base.source(file=f"{path}/src/omicsTL/r/transfer_forest.R")
+    base.source(file=f"{path}/src/omicstl/r/transfer_forest.R")
     logger.info("R environment initialized")
 
 class TransferForest:

@@ -6,8 +6,8 @@ import torch
 from pandas.testing import assert_frame_equal
 from torch import device
 
-from omicsTL.simulation_utils.data_utils import DatasetContainer, DatasetManager
-from omicsTL.simulation_utils.model_utils import fit_dl_model, fit_rf_model
+from omicstl.simulation_utils.data_utils import DatasetContainer, DatasetManager
+from omicstl.simulation_utils.model_utils import fit_dl_model, fit_rf_model
 
 
 logger = logging.getLogger(__name__)

@@ -9,9 +9,9 @@ import pandas as pd
 from sklearn.model_selection import KFold, LeaveOneOut, ParameterGrid, StratifiedKFold
 from torch import device
 
-from omicsTL.simulation_utils.data_utils import DatasetContainer
-from omicsTL.transfer_forest import TransferForest
-from omicsTL.transfer_networks import TransferMLP, TransferVAE
+from omicstl.simulation_utils.data_utils import DatasetContainer
+from omicstl.transfer_forest import TransferForest
+from omicstl.transfer_networks import TransferMLP, TransferVAE
 
 logger = logging.getLogger(__name__)
 

@@ -63,6 +63,7 @@ RUN pip install -r requirements.txt -r requirements-dev.txt
 RUN R -e 'install.packages(c("BiocManager", "ggplot2", "here", "Matrix", "data.table", "survival", "Rcpp", "readr"), quiet=TRUE)'
 RUN R -e 'BiocManager::install(version = "3.20", ask=FALSE, force=TRUE)'
 RUN R -e 'BiocManager::install("mvdalab", quiet=TRUE)'
-RUN R -e 'devtools::install_local("/workspaces/omicsTL/r/viRF_code/viRandomForests_1.0.tar.gz")'
 
 COPY . /workspaces/omicsTL
+
+RUN R -e 'devtools::install_local("/workspaces/omicsTL/src/omicstl/r/viRF_code/viRandomForests_1.0.tar.gz")'

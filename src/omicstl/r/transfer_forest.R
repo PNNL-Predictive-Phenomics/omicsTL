@@ -1,4 +1,4 @@
-source(here::here("src", "omicsTL", "r", "requirements.R"))
+source(here::here("src", "omicstl", "r", "requirements.R"))
 
 #' Train a transfer model using an existing random forest
 #'

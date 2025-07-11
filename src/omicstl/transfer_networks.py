@@ -16,9 +16,9 @@ from torch.optim import AdamW
 from torch.optim import Optimizer
 from torch.optim.lr_scheduler import LRScheduler
 
-from omicsTL.deep_learning_utils import PredictionMode, compute_accuracy, compute_mse
-from omicsTL.mult_mlp import make_joint_model
-from omicsTL.mult_vae import make_joint_vae
+from omicstl.deep_learning_utils import PredictionMode, compute_accuracy, compute_mse
+from omicstl.mult_mlp import make_joint_model
+from omicstl.mult_vae import make_joint_vae
 
 logger = logging.getLogger(__name__)
 

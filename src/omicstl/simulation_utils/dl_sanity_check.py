@@ -5,8 +5,8 @@ import numpy as np
 import pandas as pd
 import torch
 
-import omicsTL.simulation_utils.model_utils as mu
-from omicsTL.simulation_utils.data_utils import DatasetManager
+import omicstl.simulation_utils.model_utils as mu
+from omicstl.simulation_utils.data_utils import DatasetManager
 
 
 def plot_df_columns_over_time(df, figsize=(12, 6), use_subplots=False, skip_non_numeric=True):

@@ -6,7 +6,7 @@
 #
 #
 #
-import omicsTL.simulation_utils.data_utils
+import omicstl.simulation_utils.data_utils
 
 
 #

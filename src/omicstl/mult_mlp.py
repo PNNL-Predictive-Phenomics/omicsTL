@@ -4,7 +4,7 @@ import torch
 import torch.nn.functional as tf
 from torch import nn
 from typing import Callable, List
-from omicsTL.deep_learning_utils import PredictionMode, add_last_layer, freeze_layers
+from omicstl.deep_learning_utils import PredictionMode, add_last_layer, freeze_layers
 
 
 
