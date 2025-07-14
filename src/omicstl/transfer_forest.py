@@ -11,17 +11,22 @@ from sklearn.linear_model import LinearRegression
 
 from omicstl.r_utils import df2pd, pd2df
 from omicstl.deep_learning_utils import PredictionMode
+from omicstl._defs import _PKG_ROOT
 
 logger = logging.getLogger(__name__)
 
-def load_r_functions(path: str = "..") -> None:
+def load_r_functions(path: str | None = None) -> None:
     """Initialize R environment and loads transfer learning random forest logic from R.
 
     This method sources the R script containing transfer forest functionality.
     """
+    if path is None:
+        path = _PKG_ROOT()
+
     logger.info("Initializing R environment")
     base = importr("base")
-    base.source(file=f"{path}/src/omicstl/r/transfer_forest.R")
+    base.Sys_setenv(OMICSTL_PKG_ROOT = _PKG_ROOT())
+    base.source(file=f"{path}/r/transfer_forest.R")
     logger.info("R environment initialized")
 
 class TransferForest:

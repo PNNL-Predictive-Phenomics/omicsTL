@@ -432,9 +432,9 @@ def select_best_parameters(
         best_idx = results[metric].idxmin() if metric in MINIMIZE_METRICS else results[metric].idxmax()
         best_val = results[metric].min() if metric in MINIMIZE_METRICS else results[metric].max()
         best_params = {k: results.loc[best_idx, k] for k in param_cols}
-        print(f"Best parameter combination found. Metric {metric} with value {best_val}")
-        print(best_params)
-        print(results[metric])
+        logger.info(f"Best parameter combination found. Metric {metric} with value {best_val}")
+        logger.info(best_params)
+        logger.info(results[metric])
     else:
         logger.warning("All %s values are NaN, using first parameter combination", metric)
         if len(results) > 0:

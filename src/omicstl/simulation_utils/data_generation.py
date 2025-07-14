@@ -24,18 +24,31 @@ def generate_synth_data(
         num_features : int,
         num_samples : int,
         response_fn : ro._reval,
-        response_parameters : str | None = None,
+        response_parameters : dict | None = None,
         snr : float = 1
     ) -> tuple[pd.DataFrame, pd.DataFrame, typing.Union[ro.FloatVector, NULLType]]:
+    
+    ro.r["Sys.setenv"](OMICSTL_PKG_ROOT = _PKG_ROOT()) # type: ignore
     ro.r["source"](os.path.join(_PKG_ROOT(), "r", "requirements.R")) # type: ignore
     ro.r["source"](os.path.join(_PKG_ROOT(), "r", "data_simulation_utils.R")) # type: ignore
+
+    response_parameters_r = None
+    if response_parameters is not None:
+        ncats = response_parameters.get("ncats", None)
+        quantile = response_parameters.get("quantile", None)
+        if type(quantile) is list:
+            quantile = ro.FloatVector(quantile)
+        if ncats is not None:
+            response_parameters_r = ro.ListVector({"ncats": ncats, "quantile": quantile})
+
+    print(response_parameters_r)
 
     result_data = ro.r["data_generator_wrapper"](
         data=pd2df(data),
         num_features=num_features,
         num_samples=num_samples,
         response_fn=response_fn,
-        response_parameters=ro.NULL if response_parameters is None else response_parameters,
+        response_parameters=ro.NULL if response_parameters is None else response_parameters_r,
         snr=snr
     ) # type: ignore
 
