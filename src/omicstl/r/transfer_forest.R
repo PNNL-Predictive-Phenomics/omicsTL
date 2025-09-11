@@ -37,18 +37,28 @@ train_trans_rf <- function(
   )
   out[["m1"]] <- res_1
 
-  #need to do something special for categorical
-  #This only works for binary classification at the moment
   if (model_type == "classification") {
-    y_delta_bool <- y != predict(rf_source, newdata = x)
-    y_delta <- factor(y_delta_bool, levels = c(TRUE, FALSE))
-    skip <- ifelse(mean(y_delta_bool) %in% c(0, 1), TRUE, FALSE)
+    # Get probabilities per class
+    y_res <- predict(rf_source, newdata = x, type="prob")
+
+    res_deltas <- list()
+    for (i in seq_len(dim(y_res)[2])) {
+      # Calculate deltas between correct class probability and actual probability
+      y_cat <- sapply(y, \(x) ifelse(x == i, 1, 0))
+      y_delta <- y_cat - y_res[,i]
+
+      # Train models to predict the probability delta
+      res_deltas[[i]] <- randomForest::randomForest(
+        y = y_delta,
+        x = x,
+        ntree = 500
+      )
+    }
+
+    out[["m2"]] <- res_deltas
   } else {
     y_delta <- y - predict(rf_source, newdata = x)
-    skip <- FALSE
-  }
-
-  if (!skip) {
+    
     res_2 <- viRandomForests::viRandomForests(
       y = y_delta,
       x = x,
@@ -58,11 +68,8 @@ train_trans_rf <- function(
       importance = TRUE
     )
     out[["m2"]] <- res_2
-  } else {
-    #if we are predicting everything correctly using the source model, just use that
-    #TODO: exception/warning for if we are predicting everything incorrectly
-    out[["m2"]] <- rf_source
   }
+
 
   y_source_hat <- predict(rf_source, newdata = x)
 
@@ -105,12 +112,59 @@ predict_trans_rf = function(
   pred_1 = predict(trans_rf_res[['m1']], newdata = newdata, type = pred_type)
   pred_1_val = predict(trans_rf_res[['m1']], newdata = x_val, type = pred_type)
 
-  pred_2_error = predict(trans_rf_res[['m2']], newdata = newdata, type = pred_type)
-  pred_2_error_val = predict(trans_rf_res[['m2']], newdata = x_val, type = pred_type)
-  if(pred_type == "prob") pred_2 = apply(pred_0, 2, \(v) ifelse(pred_2_error[,2] > 0.5, v, 1 - v))
-  if(pred_type != "prob") pred_2 = pred_0 + pred_2_error
-  if(pred_type == "prob") pred_2_val = apply(pred_0_val, 2, \(v) ifelse(pred_2_error_val[,2] > 0.5, v, 1 - v))
-  if(pred_type != "prob") pred_2_val = pred_0_val + pred_2_error_val
+  if (pred_type == "prob") {
+    # Predict on the source model
+    pred_2_error <- predict(trans_rf_res[['m_source']], newdata = newdata, type = pred_type)
+    pred_2_error_val <- predict(trans_rf_res[['m_source']], newdata = x_val, type = pred_type)
+
+    # Predict error deltas for each class
+    num_classes <- length(trans_rf_res[['m_source']]$classes)
+    num_samples <- dim(newdata)[1]
+    num_samples_val <- dim(x_val)[1]
+    
+    pred_2_unnorm <- list()
+    pred_2_unnorm_val <- list()
+    for (i in seq_len(num_classes)) {
+      model <- trans_rf_res[['m2']][[i]]
+      pred_2_deltas <- predict(model, newdata = newdata)
+      pred_2_deltas_val <- predict(model, newdata = x_val)
+      
+      # Add deltas to original prediction probabilities
+      pred_2_unnorm[[i]] <- pred_2_error[,i] + pred_2_deltas
+      pred_2_unnorm_val[[i]] <- pred_2_error_val[,i] + pred_2_deltas_val
+    }
+
+    # Normalize probabilities to between 0 and 1
+    pred_2 <- NULL
+    for (i in seq_len(num_samples)) {
+      row <- unname(sapply(seq_len(num_classes), \(x) pred_2_unnorm[[x]][i]))
+      if (min(row) < 0) {
+        row <- row + min(row)
+      }
+      norm_class_probs <- row/sum(row)
+      pred_2 <- c(pred_2, norm_class_probs)
+    }
+    pred_2 <- matrix(pred_2, ncol=num_classes, byrow=TRUE)
+
+    pred_2_val <- NULL
+    for (i in seq_len(num_samples)) {
+      row <- unname(sapply(seq_len(num_classes), \(x) pred_2_unnorm_val[[x]][i]))
+      if (min(row) < 0) {
+        row <- row + min(row)
+      }
+      norm_class_probs <- row/sum(row)
+      pred_2_val <- c(pred_2_val, norm_class_probs)
+    }
+    pred_2_val <- matrix(pred_2_val, ncol=num_classes, byrow=TRUE)
+    #print(pred_2)
+  } else {
+    pred_source = predict(trans_rf_res[['m_source']], newdata = newdata)
+    pred_source_val = predict(trans_rf_res[['m_source']], newdata = x_val)
+    pred_2_error = predict(trans_rf_res[['m2']], newdata = newdata)
+    pred_2_error_val = predict(trans_rf_res[['m2']], newdata = x_val)
+    pred_2 = pred_source + pred_2_error
+    pred_2_val = pred_source_val + pred_2_error_val
+  }
 
   newdata = cbind(newdata, y_source_hat = predict(trans_rf_res[['m_source']], newdata = newdata))
   x_val = cbind(x_val, y_source_hat = predict(trans_rf_res[['m_source']], newdata = x_val))
@@ -118,42 +172,63 @@ predict_trans_rf = function(
   pred_3_val = predict(trans_rf_res[["m3"]], newdata = x_val, type = pred_type)
 
   if(pred_type == "prob"){
-    # super spaghetti mode
-    pred_0_val <- matrix(pred_0_val, ncol = 2)
-    pred_1_val <- matrix(pred_1_val, ncol = 2)
-    pred_2_val <- matrix(pred_2_val, ncol = 2)
-    pred_3_val <- matrix(pred_3_val, ncol = 2)
-    pred_0 <- matrix(pred_0, ncol = 2)
-    pred_1 <- matrix(pred_1, ncol = 2)
-    pred_2 <- matrix(pred_2, ncol = 2)
-    pred_3 <- matrix(pred_3, ncol = 2)
+    pred_0_val <- matrix(pred_0_val, ncol = length(classes))
+    pred_1_val <- matrix(pred_1_val, ncol = length(classes))
+    pred_2_val <- matrix(pred_2_val, ncol = length(classes))
+    pred_3_val <- matrix(pred_3_val, ncol = length(classes))
+    pred_0 <- matrix(pred_0, ncol = length(classes))
+    pred_1 <- matrix(pred_1, ncol = length(classes))
+    pred_2 <- matrix(pred_2, ncol = length(classes))
+    pred_3 <- matrix(pred_3, ncol = length(classes))
 
-    tryCatch({
-      meta_model <- randomForest::randomForest(
-        y = factor(y_val, levels = classes),
-        x = tibble::tibble(
-          m0 = pred_0_val[,2],
-          m1 = pred_1_val[,2],
-          m2 = pred_2_val[,2],
-          m3 = pred_3_val[,2]
-        )
-      )
-      pred_ensemble <- predict(
-        meta_model,
-        newdata = tibble::tibble(
-          m0 = pred_0[,2],
-          m1 = pred_1[,2],
-          m2 = pred_2[,2],
-          m3 = pred_3[,2]
+    pred_combine <- cbind(pred_0, pred_1, pred_2, pred_3)
+    pred_combine_val <- cbind(pred_0_val, pred_1_val, pred_2_val, pred_3_val)
+
+    # Create a model to predict the class using the different model results
+    m_ensemble <- randomForest::randomForest(
+      y = factor(y_val, levels = classes),
+      x = pred_combine
+    )
+
+    # Extract the importance values
+    ensemble_importance <- importance(m_ensemble)[,1]
+    num_classes <- length(ensemble_importance) / 4
+    num_samples <- dim(pred_combine)[1]
+    class_model_weights <- data.frame(
+      matrix(
+        sapply(
+          seq_len(num_classes),
+          \(x) sapply(
+            1:4,
+            \(y) ensemble_importance[((x - 1) * 4) + y]
+          )
         ),
-        type = pred_type
-      )[,2]
+        ncol=4,
+        byrow=TRUE
+      )
+    )
+    colnames(class_model_weights) <- c("m0", "m1", "m2", "m3")
 
-    }, error = function(e) {
-      message("An error occurred: ", e$message)
-      pred_ensemble <<- NA  # Assign NULL to pred_ensemble in case of failure
-    })
+    class_scores_all <- c()
+    class_scores_all_val <- c()
+    for (sample in seq_len(num_samples)) {
+      class_scores <- rep(1, num_classes)
+      class_scores_val <- rep(1, num_classes)
+      for (class in seq_len(num_classes)) {
+        for (model in 1:4) {
+          #  print(paste("Class", class, "of model", model, "is", pred_combine[sample, (model - 1) * num_classes + class], "*", class_model_weights[class, model]))
+          class_scores[class] <- class_scores[class] * pred_combine[sample, (model - 1) * num_classes + class] ^ class_model_weights[class, model]
+          class_scores_val[class] <- class_scores_val[class] * pred_combine_val[sample, (model - 1) * num_classes + class] ^ class_model_weights[class, model]
+        }
+      }
+      class_scores <- class_scores / sum(class_scores)
+      class_scores_val <- class_scores_val / sum(class_scores_val)
+      class_scores_all <- c(class_scores_all, class_scores)
+      class_scores_all_val <- c(class_scores_all_val, class_scores_val)
+    }
 
+    pred_ensemble <- matrix(class_scores_all, ncol=num_classes, byrow=TRUE)
+    pred_ensemble_val <- matrix(class_scores_all_val, ncol=num_classes, byrow=TRUE)
 
     #metric0 = mean(ifelse(pred_0_val[,2] > 0.5, classes[2], classes[1]) == y_val)
     #metric1 = mean(ifelse(pred_1_val[,2] > 0.5, classes[2], classes[1]) == y_val)
@@ -168,13 +243,44 @@ predict_trans_rf = function(
     #  pred_3[,2]
     #) %*% weight_ensemble)
 
+    pred_0_pred_class <- apply(pred_0, 1, \(x) which.max(x) - 1)
+    pred_0_max_prob <- apply(pred_0, 1, max)
+    pred_1_pred_class <- apply(pred_1, 1, \(x) which.max(x) - 1)
+    pred_1_max_prob <- apply(pred_1, 1, max)
+    pred_2_pred_class <- apply(pred_2, 1, \(x) which.max(x) - 1)
+    pred_2_max_prob <- apply(pred_2, 1, max)
+    pred_3_pred_class <- apply(pred_3, 1, \(x) which.max(x) - 1)
+    pred_3_max_prob <- apply(pred_3, 1, max)
+    pred_ensemble_pred_class <- apply(pred_ensemble, 1, \(x) which.max(x) - 1)
+    pred_ensemble_max_prob <- apply(pred_ensemble, 1, max)
+    
+    pred_0_val_pred_class <- apply(pred_0_val, 1, \(x) which.max(x) - 1)
+    pred_0_val_max_prob <- apply(pred_0_val, 1, max)
+    pred_1_val_pred_class <- apply(pred_1_val, 1, \(x) which.max(x) - 1)
+    pred_1_val_max_prob <- apply(pred_1_val, 1, max)
+    pred_2_val_pred_class <- apply(pred_2_val, 1, \(x) which.max(x) - 1)
+    pred_2_val_max_prob <- apply(pred_2_val, 1, max)
+    pred_3_val_pred_class <- apply(pred_3_val, 1, \(x) which.max(x) - 1)
+    pred_3_val_max_prob <- apply(pred_3_val, 1, max)
+    pred_ensemble_val_pred_class <- apply(pred_ensemble_val, 1, \(x) which.max(x) - 1)
+    pred_ensemble_val_max_prob <- apply(pred_ensemble_val, 1, max)
+    
+    #pred_ensemble_max_prob[pred_ensemble_max_prob == 1.0] <- 0.9999
+
     out = data.frame(
-      pred_0 = pred_0[,2],
-      pred_1 = pred_1[,2],
-      pred_2 = pred_2[,2],
-      pred_3 = pred_3[,2],
-      pred_ensemble = pred_ensemble
+      truth = y_val,
+      pred_0 = pred_0_pred_class,
+      pred_0_prob = pred_0_max_prob,
+      pred_1 = pred_1_pred_class,
+      pred_1_prob = pred_1_max_prob,
+      pred_2 = pred_2_pred_class,
+      pred_2_prob = pred_2_max_prob,
+      pred_3 = pred_3_pred_class,
+      pred_3_prob = pred_3_max_prob,
+      pred_ensemble = pred_ensemble_pred_class,
+      pred_ensemble_prob = pred_ensemble_max_prob
     )
+    # print(out)
   } else {
 
     meta_model <- randomForest::randomForest(
@@ -205,5 +311,6 @@ predict_trans_rf = function(
       pred_ensemble = pred_ensemble
     )
   }
+  # print(out)
   return(out)
 }

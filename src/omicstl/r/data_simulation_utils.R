@@ -907,10 +907,6 @@ response_generator <- function(data, func, SNR,
                                ncats = NULL,
                                thresh = NULL){
 
-  print(SNR)
-  print(ncats)
-  print(thresh)
-
   # uncorrupted signal
   pure_y <- func(data)
 

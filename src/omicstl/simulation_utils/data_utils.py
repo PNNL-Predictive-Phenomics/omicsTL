@@ -318,8 +318,8 @@ class DatasetManager:
         datasets = self.load_datasets(id_tuple, read_csv_kwargs)
 
         source_data=datasets["source"]
-        print(source_data)
-        print(type(source_data))
+        # print(source_data)
+        # print(type(source_data))
         if not isinstance(source_data, pd.DataFrame):
             msg = f"Read source data is of type {type(source_data)} instead of pd.DataFrame"
             raise ValueError(msg)

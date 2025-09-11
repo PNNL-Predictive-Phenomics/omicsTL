@@ -12,6 +12,7 @@ from torch import device
 from omicstl.simulation_utils.data_utils import DatasetContainer
 from omicstl.transfer_forest import TransferForest
 from omicstl.transfer_networks import TransferMLP, TransferVAE
+import math
 
 logger = logging.getLogger(__name__)
 
@@ -137,17 +138,23 @@ def calculate_metrics(
     metrics["recall"] = np.nan
         
     if is_classification:
-        predicted_classes = np.array([2 if x >= 0.5 else 1 for x in predicted_values])
-
         unique_classes = np.unique(true_values)
+        
+        predicted_classes = np.array([np.int64(x) + 1 for x in predicted_values])
+
+        # print(f"{true_values}\nvs\n{predicted_classes}\n({predicted_values})")
+
         metrics["acc"] = float(accuracy_score(true_values, predicted_classes))
-        metrics["roc_auc"] = float(roc_auc_score(true_values, predicted_values))
+
+        # ROC AUC doesn't handle multi-class with the given inputs.
+        if len(unique_classes) == 2:
+            metrics["roc_auc"] = float(roc_auc_score(true_values, predicted_values))
+            metrics["mcc"] = float(matthews_corrcoef(true_values, predicted_classes))
 
         if len(unique_classes) > 1:
-            metrics["f1"] = float(f1_score(true_values, predicted_classes))
-            metrics["precision"] = float(precision_score(true_values, predicted_classes, zero_division=0))
-            metrics["recall"] = float(recall_score(true_values, predicted_classes, zero_division=0))
-            metrics["mcc"] = float(matthews_corrcoef(true_values, predicted_classes))
+            metrics["f1"] = float(f1_score(true_values, predicted_classes, average="weighted" if len(unique_classes) > 2 else "binary"))
+            metrics["precision"] = float(precision_score(true_values, predicted_classes, zero_division=0, average="weighted" if len(unique_classes) > 2 else "binary"))
+            metrics["recall"] = float(recall_score(true_values, predicted_classes, zero_division=0, average="weighted" if len(unique_classes) > 2 else "binary"))
         
         return metrics
 
@@ -1020,21 +1027,25 @@ def fit_rf_model(
         logger.info("Set model for regression task")
 
     logger.info("Training model on source data")
+    # print("TRAINING")
     transfer_forest.train_models(
         views=[source_data.features],
         response=source_data.response,
     )
 
+    # print("UPDATING")
     logger.info("Updating model with target data")
     transfer_forest.update_models(
         views=[target_data.features],
         response=target_data.response,
     )
 
+    # print("TESTING")
     if hasattr(data_container, "target_test_data") and data_container.target_test_data:
         logger.info(f"Found {len(data_container.target_test_data)} test datasets")
         for i, test_dataset in enumerate(data_container.target_test_data):
             logger.info(f"Processing test dataset {i + 1}/{len(data_container.target_test_data)}")
+
             test_data = create_data_partition(
                 data=test_dataset,
                 response_id=response_id,
@@ -1042,6 +1053,9 @@ def fit_rf_model(
             )
             logger.info(f"Test data {i} shape: {test_data.features.shape}")
 
+            # print("PREDICT")
+            # print(test_dataset.shape)
+            # print(test_data.features.shape)
             test_predictions = transfer_forest.generate_predictions(
                 views=[test_data.features],
                 response=test_data.response,
@@ -1053,9 +1067,13 @@ def fit_rf_model(
             if not test_predictions:
                 logger.warning(f"Empty predictions returned for test data {i}")
 
+            # print("CALCULATE")
             test_predictions = test_predictions[0]
             for model_type, prediction in test_predictions.items():
                 logger.info(f"Calculating metrics for test data {i} with model type: {model_type}")
+                if str.endswith(model_type, "_prob"):
+                    continue
+                
                 test_metrics = calculate_metrics(test_data.response, prediction, is_classification)
                 test_row = {
                     "scenario": scenario,
