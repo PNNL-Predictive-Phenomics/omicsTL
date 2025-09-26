@@ -10,7 +10,7 @@ from sklearn.model_selection import KFold, LeaveOneOut, ParameterGrid, Stratifie
 from torch import device
 
 from omicstl.simulation_utils.data_utils import DatasetContainer
-from omicstl.transfer_forest import TransferForest
+from omicstl.transfer_forest import TransferForest, load_r_functions
 from omicstl.transfer_networks import TransferMLP, TransferVAE
 import math
 
@@ -990,6 +990,8 @@ def fit_rf_model(
                                     DataFrame with model evaluation results
 
     """
+    load_r_functions()
+
     logger.info("Starting random forest model fitting")
     results = create_results_df()
     replicate, scenario = data_container.id_tuple
@@ -1053,6 +1055,18 @@ def fit_rf_model(
             )
             logger.info(f"Test data {i} shape: {test_data.features.shape}")
 
+            ensemble_views = None
+            ensemble_response = None
+            if data_container.target_ensemble_data is not None:
+                ensemble_data = create_data_partition(
+                    data_container.target_ensemble_data,
+                    response_id=response_id,
+                    feature_cols=feature_cols
+                )
+
+                ensemble_views = [ensemble_data.features]
+                ensemble_response = ensemble_data.response
+
             # print("PREDICT")
             # print(test_dataset.shape)
             # print(test_data.features.shape)
@@ -1061,6 +1075,8 @@ def fit_rf_model(
                 response=test_data.response,
                 validation_views=[test_data.features],
                 validation_response=test_data.response,
+                ensemble_views=ensemble_views,
+                ensemble_response=ensemble_response,
                 integration_type=TransferForest.IntegrationType.NONE,
             )
 

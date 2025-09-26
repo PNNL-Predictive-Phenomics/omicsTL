@@ -198,6 +198,8 @@ class TransferForest:
         response: pd.DataFrame,
         validation_views: list[pd.DataFrame],  # = None
         validation_response: pd.DataFrame,  # = None
+        ensemble_views: list[pd.DataFrame] | None = None,
+        ensemble_response: pd.DataFrame | None = None,
         integration_type: IntegrationType = IntegrationType.NONE,
     ) -> list[dict]:
         """Predicts using the transfer models on new data with optional integration of predictions across views.
@@ -233,7 +235,9 @@ class TransferForest:
                 newdata=pd2df(view),
                 x_val=pd2df(validation_views[index]),
                 y_val=self._resolve_response(validation_response),
-            )
+                x_ensemble = robjects.NULL if ensemble_views is None else pd2df(ensemble_views[index]),
+                y_ensemble = robjects.NULL if ensemble_response is None else self._resolve_response(ensemble_response)
+            ) # type: ignore
             prediction_dicts.append(df2pd(res).to_dict(orient="list"))
 
             if integration_type != self.IntegrationType.WEIGHTED:
@@ -244,6 +248,8 @@ class TransferForest:
                 newdata=pd2df(validation_views[index]),
                 x_val=pd2df(validation_views[index]),
                 y_val=self._resolve_response(validation_response),
+                x_ensemble = robjects.NULL if ensemble_views is None else ensemble_views[index],
+                y_ensemble = robjects.NULL if ensemble_response is None else ensemble_response
             )
             validation_dicts.append(df2pd(res).to_dict(orient="list"))
 

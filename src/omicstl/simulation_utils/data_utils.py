@@ -28,6 +28,7 @@ class DatasetContainer:
         source_data: pd.DataFrame,
         target_data: pd.DataFrame,
         target_test_data: list[pd.DataFrame] | None = None,
+        target_ensemble_data: pd.DataFrame | None = None,
         id_tuple: tuple[int, int] | None = None,
     ) -> None:
         """Initialize with source and target data.
@@ -43,6 +44,7 @@ class DatasetContainer:
         self.source_data = source_data
         self.target_data = target_data
         self.target_test_data = target_test_data if target_test_data is not None else []
+        self.target_ensemble_data = target_ensemble_data
         self.id_tuple = id_tuple if id_tuple else (None, None)
         self.response_id: str
 
@@ -95,13 +97,17 @@ class DatasetContainer:
                 - "source_test": Source testing data (if split)
                 - "target": Target training data
                 - "target_test": List of target test datasets
+                - "target_ensemble": Ensemble training data (if present)
 
         """
         result: dict[str, pd.DataFrame | list[pd.DataFrame]] = {
             "source": self.source_data,
             "target": self.target_data,
-            "target_test": self.target_test_data,
+            "target_test": self.target_test_data
         }
+
+        if self.target_ensemble_data is not None:
+            result["target_ensemble"] = self.target_ensemble_data
 
         if self.source_train_data is not None:
             result["source_train"] = self.source_train_data
@@ -163,9 +169,9 @@ class DatasetManager:
 
         """
         grouped_paths: dict[tuple[int, int], dict[str, str | None | list[str]]] = defaultdict(
-            lambda: {"source": None, "target": None, "target_test": []},  # Initialize as empty list
+            lambda: {"source": None, "target": None, "target_ensemble": None, "target_test": []},  # Initialize as empty list
         )
-        pattern = r"(source|target|target_test)_data_(\d+)_(\d+)\.csv"
+        pattern = r"(source|target|target_test|target_ensemble)_data_(\d+)_(\d+)\.csv"
         dir_path = pathlib.Path(self.directory_path)
 
         for file_path in dir_path.iterdir():
@@ -183,6 +189,8 @@ class DatasetManager:
                 grouped_paths[key]["source"] = str(file_path)
             elif file_type == "target":
                 grouped_paths[key]["target"] = str(file_path)
+            elif file_type == "target_ensemble":
+                grouped_paths[key]["target_ensemble"] = str(file_path)
             elif file_type == "target_test":
                 grouped_paths[key]["target_test"].append(str(file_path))
 
@@ -232,7 +240,7 @@ class DatasetManager:
         self,
         id_tuple: tuple[int, int],
         read_csv_kwargs: dict[str, Any] | None = None,
-    ) -> dict[str, pd.DataFrame | list[pd.DataFrame]]:
+    ) -> dict[str, None | pd.DataFrame | list[pd.DataFrame]]:
         """Load datasets corresponding to a specific tuple of replicate/scenario IDs.
 
         Args:
@@ -243,6 +251,7 @@ class DatasetManager:
             A dictionary containing the loaded datasets with keys:
                 - 'source': DataFrame for source data
                 - 'target': DataFrame for target training data
+                - 'target_ensemble': DataFrame for training ensemble model
                 - 'target_test': List of DataFrames for target test data
 
         Raises:
@@ -267,7 +276,7 @@ class DatasetManager:
             read_csv_kwargs = {}
 
         # Initialize result dictionary
-        datasets: dict[str, pd.DataFrame | list[pd.DataFrame]] = {"source": pd.DataFrame(), "target": pd.DataFrame(), "target_test": []}
+        datasets: dict[str, None | pd.DataFrame | list[pd.DataFrame]] = {"source": pd.DataFrame(), "target": pd.DataFrame(), "target_ensemble": None, "target_test": []}
 
         # Load source dataset if available
         if paths["source"]:
@@ -282,6 +291,9 @@ class DatasetManager:
         else:
             msg = f"Target dataset for ID tuple {id_tuple} not found"
             raise FileNotFoundError(msg)
+        
+        if paths["target_ensemble"] is not None:
+            datasets["target_ensemble"] = pd.read_csv(paths["target_ensemble"], **read_csv_kwargs)
 
         # Load target test datasets if available
         if paths["target_test"]:
@@ -326,12 +338,17 @@ class DatasetManager:
 
         target_data=datasets["target"]
         if not isinstance(target_data, pd.DataFrame):
-            msg = "Read source data is not dataframe."
+            msg = "Read target data is not dataframe."
+            raise ValueError(msg)
+        
+        ensemble_data=datasets["target_ensemble"]
+        if not isinstance(target_ensemble_data, pd.DataFrame) and ensemble_data is not None:
+            msg = "Read target_ensemble data is not dataframe."
             raise ValueError(msg)
 
         target_test_data=datasets["target_test"]
         if not isinstance(target_test_data, list):
-            msg = "Read source data is not dataframe."
+            msg = "Read target_test data is not dataframe."
             raise ValueError(msg)
 
         # Create and return a DatasetContainer
@@ -339,6 +356,7 @@ class DatasetManager:
             source_data=source_data,
             target_data=target_data,
             target_test_data=target_test_data,
+            target_ensemble_data=ensemble_data,
             id_tuple=id_tuple,
         )
 

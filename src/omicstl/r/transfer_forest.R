@@ -12,6 +12,13 @@ train_trans_rf <- function(
     x,
     rf_source,
     var_importance_source) {
+
+  if (rf_source$type == "classification") {
+    pred_type = "prob"
+  } else {
+    pred_type = "response"
+  }
+
   out <- vector("list", length = 5)
   names(out) <- c("m0", "m1", "m2", "m3", "m_source")
 
@@ -59,19 +66,16 @@ train_trans_rf <- function(
   } else {
     y_delta <- y - predict(rf_source, newdata = x)
     
-    res_2 <- viRandomForests::viRandomForests(
+    res_2 <- randomForest::randomForest(
       y = y_delta,
       x = x,
-      fprob = var_importance_source,
-      ntree = 500,
-      keep.forest = TRUE,
-      importance = TRUE
+      ntree = 500
     )
     out[["m2"]] <- res_2
   }
 
 
-  y_source_hat <- predict(rf_source, newdata = x)
+  y_source_hat <- predict(rf_source, newdata = x, type = pred_type)
 
   res_3 <- viRandomForests::viRandomForests(
     y = y,
@@ -97,7 +101,9 @@ predict_trans_rf = function(
     trans_rf_res,
     newdata,
     y_val,
-    x_val
+    x_val,
+    x_ensemble = NULL,
+    y_ensemble = NULL
 ){
   if (trans_rf_res[["m_source"]]$type == "classification") {
     pred_type = "prob"
@@ -105,6 +111,9 @@ predict_trans_rf = function(
   } else {
     pred_type = "response"
   }
+
+  pred_source = predict(trans_rf_res[['m_source']], newdata = newdata, type = pred_type)
+  pred_source_val = predict(trans_rf_res[['m_source']], newdata = x_val, type = pred_type)
 
   pred_0 = predict(trans_rf_res[['m0']], newdata = newdata, type = pred_type)
   pred_0_val = predict(trans_rf_res[['m0']], newdata = x_val, type = pred_type)
@@ -158,16 +167,14 @@ predict_trans_rf = function(
     pred_2_val <- matrix(pred_2_val, ncol=num_classes, byrow=TRUE)
     #print(pred_2)
   } else {
-    pred_source = predict(trans_rf_res[['m_source']], newdata = newdata)
-    pred_source_val = predict(trans_rf_res[['m_source']], newdata = x_val)
     pred_2_error = predict(trans_rf_res[['m2']], newdata = newdata)
     pred_2_error_val = predict(trans_rf_res[['m2']], newdata = x_val)
     pred_2 = pred_source + pred_2_error
     pred_2_val = pred_source_val + pred_2_error_val
   }
 
-  newdata = cbind(newdata, y_source_hat = predict(trans_rf_res[['m_source']], newdata = newdata))
-  x_val = cbind(x_val, y_source_hat = predict(trans_rf_res[['m_source']], newdata = x_val))
+  newdata = cbind(newdata, y_source_hat = predict(trans_rf_res[['m_source']], newdata = newdata, type = pred_type))
+  x_val = cbind(x_val, y_source_hat = predict(trans_rf_res[['m_source']], newdata = x_val, type = pred_type))
   pred_3 = predict(trans_rf_res[["m3"]], newdata = newdata, type = pred_type)
   pred_3_val = predict(trans_rf_res[["m3"]], newdata = x_val, type = pred_type)
 
@@ -187,7 +194,7 @@ predict_trans_rf = function(
     # Create a model to predict the class using the different model results
     m_ensemble <- randomForest::randomForest(
       y = factor(y_val, levels = classes),
-      x = pred_combine
+      x = pred_combine_val
     )
 
     # Extract the importance values
@@ -243,6 +250,8 @@ predict_trans_rf = function(
     #  pred_3[,2]
     #) %*% weight_ensemble)
 
+    pred_source_pred_class <- apply(pred_source, 1, \(x) which.max(x) - 1)
+    pred_source_max_prob <- apply(pred_source, 1, max)
     pred_0_pred_class <- apply(pred_0, 1, \(x) which.max(x) - 1)
     pred_0_max_prob <- apply(pred_0, 1, max)
     pred_1_pred_class <- apply(pred_1, 1, \(x) which.max(x) - 1)
@@ -254,6 +263,8 @@ predict_trans_rf = function(
     pred_ensemble_pred_class <- apply(pred_ensemble, 1, \(x) which.max(x) - 1)
     pred_ensemble_max_prob <- apply(pred_ensemble, 1, max)
     
+    pred_source_val_pred_class <- apply(pred_source_val, 1, \(x) which.max(x) - 1)
+    pred_source_val_max_prob <- apply(pred_source_val, 1, max)
     pred_0_val_pred_class <- apply(pred_0_val, 1, \(x) which.max(x) - 1)
     pred_0_val_max_prob <- apply(pred_0_val, 1, max)
     pred_1_val_pred_class <- apply(pred_1_val, 1, \(x) which.max(x) - 1)
@@ -269,6 +280,8 @@ predict_trans_rf = function(
 
     out = data.frame(
       truth = y_val,
+      pred_source = pred_source_pred_class,
+      pred_source_prob = pred_source_max_prob,
       pred_0 = pred_0_pred_class,
       pred_0_prob = pred_0_max_prob,
       pred_1 = pred_1_pred_class,
@@ -283,27 +296,43 @@ predict_trans_rf = function(
     # print(out)
   } else {
 
-    meta_model <- randomForest::randomForest(
-        y = y_val,
-        x = tibble::tibble(
-          m0 = pred_0_val,
-          m1 = pred_1_val,
-          m2 = pred_2_val,
-          m3 = pred_3_val
+    # Equal weight, so average all the models
+    pred_ensemble <- (pred_0 + pred_1 + pred_2 + pred_3) / 4
+
+    if (!is.null(x_ensemble) && !is.null(y_ensemble)) {
+
+      pred_ens_0_val = predict(trans_rf_res[["m0"]], newdata = x_ensemble, type = pred_type)
+
+      pred_ens_1_val = predict(trans_rf_res[["m1"]], newdata = x_ensemble, type = pred_type)
+
+      pred_ens_source_val = predict(trans_rf_res[['m_source']], newdata = x_ensemble, type = pred_type)
+      pred_ens_2_error_val = predict(trans_rf_res[['m2']], newdata = x_ensemble, type = pred_type)
+      pred_ens_2_val = pred_ens_source_val + pred_ens_2_error_val
+
+      x_ensemble_val = cbind(x_ensemble, y_source_hat = predict(trans_rf_res[['m_source']], newdata = x_ensemble))
+      pred_ens_3_val = predict(trans_rf_res[["m3"]], newdata = x_ensemble_val, type = pred_type)
+
+      meta_model <- randomForest::randomForest(
+        y = y_ensemble,
+        x = data.frame(
+          m0 = pred_ens_0_val,
+          m1 = pred_ens_1_val,
+          m2 = pred_ens_2_val,
+          m3 = pred_ens_3_val
         )
       )
-    pred_ensemble <- predict(
-        meta_model,
-        newdata = tibble::tibble(
-          m0 = pred_0,
-          m1 = pred_1,
-          m2 = pred_2,
-          m3 = pred_3
-        ),
-        type = pred_type
-      )
+
+      ensemble_importance <- importance(meta_model)[,1]
+      ensemble_importance <- ensemble_importance / sum(ensemble_importance)
+
+      pred_ensemble <- pred_0 * ensemble_importance[1] + 
+                       pred_1 * ensemble_importance[2] + 
+                       pred_2 * ensemble_importance[3] + 
+                       pred_3 * ensemble_importance[4]
+    }
 
     out = data.frame(
+      pred_source = pred_source,
       pred_0 = pred_0,
       pred_1 = pred_1,
       pred_2 = pred_2,
