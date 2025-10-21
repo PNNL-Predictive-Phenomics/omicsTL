@@ -37,6 +37,13 @@ class TransferForest:
         self.source_models: list = []
         self.transfer_models: list = []
 
+    def copy(self) -> "TransferForest":
+        new_transfer_forest = TransferForest()
+        new_transfer_forest.source_models = self.source_models
+        new_transfer_forest.transfer_models = self.transfer_models
+        new_transfer_forest._prediction_mode = self._prediction_mode
+        return new_transfer_forest
+
     class ModelType(Enum):
         """An enum for specifying a transfer model. Used to elimate dependancy on strings."""
 
@@ -140,7 +147,7 @@ class TransferForest:
     def update_models(
         self,
         views: list[pd.DataFrame],
-        response: pd.DataFrame,
+        response: pd.Series,
         model_type: ModelType | None = None,
         update_type: UpdateType = UpdateType.SOURCE,
         override: bool = False,
@@ -182,13 +189,11 @@ class TransferForest:
 
         for index, view in enumerate(views):
             reference_model = reference_models[index]
-            source_importance = robjects.r["importancenew"](reference_model, 2)
             self.transfer_models.append(
                 robjects.r["train_trans_rf"](
                     x=pd2df(view),
                     y=self._resolve_response(response),
-                    rf_source=reference_model,
-                    var_importance_source=source_importance,
+                    rf_source=reference_model
                 ),
             )
 

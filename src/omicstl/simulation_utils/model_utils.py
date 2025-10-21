@@ -2,7 +2,7 @@
 
 import logging
 from dataclasses import dataclass
-from typing import Any, NamedTuple
+from typing import Any, NamedTuple, Tuple
 
 import numpy as np
 import pandas as pd
@@ -10,9 +10,8 @@ from sklearn.model_selection import KFold, LeaveOneOut, ParameterGrid, Stratifie
 from torch import device
 
 from omicstl.simulation_utils.data_utils import DatasetContainer
-from omicstl.transfer_forest import TransferForest, load_r_functions
+from omicstl.transfer_forest import TransferForest, PredictionMode, load_r_functions
 from omicstl.transfer_networks import TransferMLP, TransferVAE
-import math
 
 logger = logging.getLogger(__name__)
 
@@ -977,10 +976,9 @@ def fit_dl_model(
 
     return results, model, model_nosource
 
-
 def fit_rf_model(
     data_container: DatasetContainer,
-) -> pd.DataFrame:
+) -> Tuple[pd.DataFrame, TransferForest]:
     """Fit a random forest transfer learning model.
 
     Args:
@@ -1104,3 +1102,90 @@ def fit_rf_model(
 
     logger.info(f"Model fitting completed. Results shape: {results.shape}")
     return results, transfer_forest
+
+def update_rf_model(
+    pretrained_model : TransferForest,
+    response_id : str,
+    target_data : pd.DataFrame,
+    target_test_data : list[pd.DataFrame] | None,
+    target_ensemble_data : pd.DataFrame | None
+) -> Tuple[pd.DataFrame, TransferForest]:
+    is_classification = pretrained_model._prediction_mode == PredictionMode.CLASSIFICATION
+    logger.info(f"Task type: {'Classification' if is_classification else 'Regression'}")
+
+    feature_cols = get_feature_columns(
+        data=target_data,
+        response_id=response_id,
+    )
+    logger.info(f"Using {len(feature_cols)} features for modeling")
+
+    target_data_update = create_data_partition(
+        data=target_data,
+        response_id=response_id,
+        feature_cols=feature_cols,
+    )
+
+    transfer_model = pretrained_model.copy()
+
+    transfer_model.update_models([target_data_update.features], target_data_update.response)
+
+    if target_test_data is not None:
+        logger.info(f"Found {len(target_test_data)} test datasets")
+        for i, test_dataset in enumerate(target_test_data):
+            logger.info(f"Processing test dataset {i + 1}/{len(target_test_data)}")
+
+            test_data = create_data_partition(
+                data=test_dataset,
+                response_id=response_id,
+                feature_cols=feature_cols,
+            )
+
+            logger.info(f"Test data {i} shape: {test_data.features.shape}")
+
+            ensemble_views = None
+            ensemble_response = None
+            if target_ensemble_data is not None:
+                ensemble_data = create_data_partition(
+                    target_ensemble_data,
+                    response_id=response_id,
+                    feature_cols=feature_cols
+                )
+
+                ensemble_views = [ensemble_data.features]
+                ensemble_response = ensemble_data.response
+
+            # print("PREDICT")
+            # print(test_dataset.shape)
+            # print(test_data.features.shape)
+            test_predictions = transfer_model.generate_predictions(
+                views=[test_data.features],
+                response=test_data.response,
+                validation_views=[test_data.features],
+                validation_response=test_data.response,
+                ensemble_views=ensemble_views,
+                ensemble_response=ensemble_response,
+                integration_type=TransferForest.IntegrationType.NONE,
+            )
+
+            if not test_predictions:
+                logger.warning(f"Empty predictions returned for test data {i}")
+
+            # print("CALCULATE")
+            test_predictions = test_predictions[0]
+            for model_type, prediction in test_predictions.items():
+                logger.info(f"Calculating metrics for test data {i} with model type: {model_type}")
+                if str.endswith(model_type, "_prob"):
+                    continue
+                
+                test_metrics = calculate_metrics(test_data.response, prediction, is_classification)
+                test_row = {
+                    "split": f"test_{i}",
+                    "model": "rf",
+                    "model_type": f"{model_type}",
+                    "model_id": "target",
+                    **test_metrics,
+                }
+                results = pd.concat([results, pd.DataFrame([test_row])], ignore_index=True)
+
+    logger.info(f"Model fitting completed. Results shape: {results.shape}")
+    return results, transfer_model
