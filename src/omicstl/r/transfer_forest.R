@@ -1,4 +1,9 @@
 source(here::here("src", "omicstl", "r", "requirements.R"))
+# source("/workspaces/timed-hpc/src/omicstl/r/requirements.R")
+
+# x <- readRDS("/workspaces/timed-hpc/x.rds")
+# y <- readRDS("/workspaces/timed-hpc/y.rds")
+# rf_source<- readRDS("/workspaces/timed-hpc/refmod.rds")
 
 RANDOMFOREST_NTREE <- 500
 
@@ -108,14 +113,28 @@ train_m3 <- function(
 
   y_source_hat <- predict(rf_source, newdata = x, type = pred_type)
 
-  res_3 <- viRandomForests::viRandomForests(
+  if(rf_source$type == "classification"){
+
+    res_3 <- viRandomForests::viRandomForests(
     y = y,
     x = cbind(x, y_source_hat = y_source_hat),
-    fprob= c(rep(1, num_features), rep(2, length(y_source_hat))),
+    fprob= c(rep(1, num_features), rep(2, ncol(y_source_hat))),
     ntree = 500,
     keep.forest = TRUE,
-    importance = TRUE
-  )
+    importance = TRUE)
+
+  } else{
+
+    res_3 <- viRandomForests::viRandomForests(
+    y = y,
+    x = cbind(x, y_source_hat = y_source_hat),
+    fprob= c(rep(1, num_features), rep(2, 1)),
+    ntree = 500,
+    keep.forest = TRUE,
+    importance = TRUE)
+
+  }
+  
 
   return(res_3)
 }

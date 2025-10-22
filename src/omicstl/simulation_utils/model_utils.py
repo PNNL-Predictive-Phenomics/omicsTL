@@ -139,7 +139,8 @@ def calculate_metrics(
     if is_classification:
         unique_classes = np.unique(true_values)
         
-        predicted_classes = np.array([np.int64(x) + 1 for x in predicted_values])
+        # predicted_classes = np.array([np.int64(x) + 1 for x in predicted_values])
+        predicted_classes = predicted_values
 
         # print(f"{true_values}\nvs\n{predicted_classes}\n({predicted_values})")
 
@@ -260,6 +261,22 @@ def evaluate_model(
 
     """
     predictions = model.__getattribute__(model_id).predict([data.features])
+
+    if is_classification:
+        predictions = pd.Series(predictions)
+
+        # using training instead of validation to capture unique 
+        # values since it should capture all possible values of response, whereas validation set may be unbalanced and omit classes
+        # This code is assuming that the categorical responses are coded
+        # beginning from 1, and not from 0. So a binary response would be
+        # (1,2), not (0,1). Similarly a tertiary response would be (1,2,3),
+        # not (0,1,2). If the native coding for categorical values in the
+        # data objects of omicstl is changed, this code should be changed
+        # too. 
+        response_unique_sorted = sorted(data.response.unique()) 
+        mapping = {val - 1: val for val in response_unique_sorted}
+        predictions = predictions.map(mapping)
+
     metrics = calculate_metrics(data.response, predictions, is_classification)
 
     results_row = {
@@ -640,6 +657,20 @@ def tune_model_cv(
             )
 
             predictions = model.source.predict([fold_data.validation.features])
+            predictions = pd.Series(predictions)
+
+            if is_classification:
+                # using training instead of validation to capture unique 
+                # values since it should capture all possible values of response, whereas validation set may be unbalanced and omit classes
+                # This code is assuming that the categorical responses are coded
+                # beginning from 1, and not from 0. So a binary response would be
+                # (1,2), not (0,1). Similarly a tertiary response would be (1,2,3),
+                # not (0,1,2). If the native coding for categorical values in the
+                # data objects of omicstl is changed, this code should be changed
+                # too. 
+                response_unique_sorted = sorted(fold_data.train.response.unique()) 
+                mapping = {val - 1: val for val in response_unique_sorted}
+                predictions = predictions.map(mapping)
 
             metrics = calculate_metrics(fold_data.validation.response, predictions, is_classification)
             metrics.update(hyperparams)
@@ -1088,6 +1119,25 @@ def fit_rf_model(
                 if str.endswith(model_type, "_prob"):
                     continue
                 
+                if is_classification:
+                    prediction = pd.Series([int(x) for x in prediction])
+
+                    # using source instead of validation to capture unique 
+                    # values since it should capture all possible values of response, whereas validation set may be unbalanced and omit classes
+                    # This code is assuming that the categorical responses are coded
+                    # beginning from 1, and not from 0. So a binary response would be
+                    # (1,2), not (0,1). Similarly a tertiary response would be (1,2,3),
+                    # not (0,1,2). If the native coding for categorical values in the
+                    # data objects of omicstl is changed, this code should be changed
+                    # too. 
+                    # Note that 'truth' is coded the same way as source_data.response. 
+                    # So we do not need to recode for that instance. 
+                    if model_type != 'truth':
+                        response_unique_sorted = sorted(source_data.response.unique()) 
+                        mapping = {val - 1: val for val in response_unique_sorted}
+                        prediction = prediction.map(mapping)
+
+            
                 test_metrics = calculate_metrics(test_data.response, prediction, is_classification)
                 test_row = {
                     "scenario": scenario,
