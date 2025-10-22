@@ -431,15 +431,33 @@ predict_trans_rf = function(
   #print("pred_ens")
   pred_ensemble <- NULL
   if (pred_type == "prob") {
-    
-  } else {
+    # for categorical response
+    if (!is.null(x_ensemble) && !is.null(y_ensemble)) {
+      pred_ensemble <- predict_ens(trans_rf_res, y_ensemble, x_ensemble, list(pred_0, pred_1, pred_2, pred_3), newdata, pred_type)
+      pred_ensemble_val <- predict_ens(trans_rf_res, y_ensemble, x_ensemble, list(pred_0_val, pred_1_val, pred_2_val, pred_3_val), x_val, pred_type)
+    } else {
     # If ensemble samples aren't provided, use equal weighting
-    pred_ensemble <- (pred_0 + pred_1 + pred_2 + pred_3) / 4
-  }
+      pred_ensemble <- Reduce("*", list(pred_0, pred_1, pred_2, pred_3))
+      pred_ensemble <- apply(pred_ensemble, 1, function(x){x/sum(x)})
+      pred_ensemble <- t(pred_ensemble)
 
-  if (!is.null(x_ensemble) && !is.null(y_ensemble)) {
-    pred_ensemble <- predict_ens(trans_rf_res, y_ensemble, x_ensemble, list(pred_0, pred_1, pred_2, pred_3), newdata, pred_type)
-    pred_ensemble_val <- predict_ens(trans_rf_res, y_ensemble, x_ensemble, list(pred_0_val, pred_1_val, pred_2_val, pred_3_val), x_val, pred_type)
+      pred_ensemble_val <- Reduce("*", list(pred_0_val, pred_1_val, pred_2_val, pred_3_val))
+      pred_ensemble_val <- apply(pred_ensemble_val, 1, function(x){x/sum(x)})
+      pred_ensemble_val <- t(pred_ensemble_val)
+    }
+  # For continuous response
+  } else {
+
+    if (!is.null(x_ensemble) && !is.null(y_ensemble)) {
+      pred_ensemble <- predict_ens(trans_rf_res, y_ensemble, x_ensemble, list(pred_0, pred_1, pred_2, pred_3), newdata, pred_type)
+      pred_ensemble_val <- predict_ens(trans_rf_res, y_ensemble, x_ensemble, list(pred_0_val, pred_1_val, pred_2_val, pred_3_val), x_val, pred_type)
+    } else {
+      # If ensemble samples aren't provided, use equal weighting
+      pred_ensemble <- (pred_0 + pred_1 + pred_2 + pred_3) / 4
+
+      pred_ensemble_val <- (pred_0_val + pred_1_val + pred_2_val + pred_3_val) / 4
+    }
+
   }
   
   out <- NULL
