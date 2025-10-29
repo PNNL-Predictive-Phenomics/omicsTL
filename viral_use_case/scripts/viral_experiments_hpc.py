@@ -15,13 +15,13 @@ from omicstl.simulation_utils.model_utils import fit_rf_model
 
 # Read in source, target_transfer, and target_validation datasets.
 base_source_data = pd.read_csv('/qfs/people/flor829/PPI_TIMED/timed-hpc/viral_use_case/data/source_dset.csv').set_index("SampleID")
-base_source_data['Resp'] = base_source_data['Resp'].apply(lambda x: 1 if x == 'viral' else 0)
+base_source_data['Resp'] = base_source_data['Resp'].apply(lambda x: 2 if x == 'viral' else 1)
 
 base_target_transfer_data = pd.read_csv('/qfs/people/flor829/PPI_TIMED/timed-hpc/viral_use_case/data/target_transfer.csv').set_index("SampleID")
-base_target_transfer_data['Resp'] = base_target_transfer_data['Resp'].apply(lambda x: 1 if x == 'viral' else 0)
+base_target_transfer_data['Resp'] = base_target_transfer_data['Resp'].apply(lambda x: 2 if x == 'viral' else 1)
 
 base_target_validation_data = pd.read_csv('/qfs/people/flor829/PPI_TIMED/timed-hpc/viral_use_case/data/target_validation.csv').set_index("SampleID")
-base_target_validation_data['Resp'] = base_target_validation_data['Resp'].apply(lambda x: 1 if x == 'viral' else 0)
+base_target_validation_data['Resp'] = base_target_validation_data['Resp'].apply(lambda x: 2 if x == 'viral' else 1)
 
 de_prots_info = pd.read_csv('/qfs/people/flor829/PPI_TIMED/timed-hpc/viral_use_case/data/de_prots.csv')
 
@@ -46,8 +46,8 @@ total_prots = base_source_data.shape[1] - 1 # substract 1 to remove the response
 # but otherwise implements the same experiment. 
 
 # Define the inputs
-source_sizes = [10, 25, 100, 358]
-target_sizes = [10, 25, 100, 192]
+source_sizes = [15, 25, 100, 358]
+target_sizes = [15, 25, 100, 192]
 snrs = [0/total_prots, 1/total_prots, 5/total_prots, 25/total_prots, 68/total_prots, 68/68]
 
 exp_conditions = list(itertools.product(source_sizes, target_sizes, snrs))
@@ -76,7 +76,7 @@ param_grid = {
 
 # Uncomment if running in the context of the HPC.
 # sys.argv[0] is the script name, hence why we start at 1
-idx = int(sys.argv[1])
+idx = int(sys.argv[1])-1
 nreps = int(sys.argv[2])
 
 print(idx)
@@ -93,19 +93,25 @@ num_de_prots = min(snr * total_prots, len(de_prots))
 num_nonde_prots = 0 if snr == 1 else total_prots
 
 # Begin Loop --------------------------------------------------------------
+random.seed(idx)
 for i in range(0, nreps):
-    random.seed(i)
 
     # Sample which de_prots are actually selected. 
     loop_de_prots = random.sample(de_prots, int(num_de_prots)) if snr != 1 else de_prots
     loop_nonde_prots = nonde_prots if snr != 1 else []
 
     # Sample which samples are actually selected
-    loop_source_data, _ = train_test_split(base_source_data, train_size=source_size/base_source_data.shape[0],
-                                           stratify=base_source_data['Resp'])
-
-    loop_transfer_data, _ = train_test_split(base_target_transfer_data, train_size=target_size/base_target_transfer_data.shape[0], 
-                                             stratify=base_target_transfer_data['Resp'])
+    if float(source_size/base_source_data.shape[0]) == 1:
+        loop_source_data = base_source_data
+    else:
+        loop_source_data, _ = train_test_split(base_source_data, train_size=float(source_size/base_source_data.shape[0]),
+                                               stratify=base_source_data['Resp'])
+        
+    if float(target_size/base_target_transfer_data.shape[0]) == 1:
+        loop_transfer_data = base_target_transfer_data
+    else:
+        loop_transfer_data, _ = train_test_split(base_target_transfer_data, train_size=float(target_size/base_target_transfer_data.shape[0]), 
+                                                 stratify=base_target_transfer_data['Resp'])
 
     # Down-select proteins in the above-defined datasets. 
     loop_vars = ['Resp'] + loop_de_prots + loop_nonde_prots
