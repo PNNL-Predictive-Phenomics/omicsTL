@@ -423,6 +423,10 @@ predict_trans_rf = function(
   #print("pred_2")
   pred_2 <- predict_m2(trans_rf_res, newdata, pred_source, pred_type)
   pred_2_val <- predict_m2(trans_rf_res, x_val, pred_source_val, pred_type)
+  # Need to specify colnames here since predict_m2() does not
+  # automatically assign them.
+  colnames(pred_2) <- colnames(pred_1)
+  colnames(pred_2_val) <- colnames(pred_1_val)
 
   #print("pred_3")
   pred_3 = predict_m3(trans_rf_res, newdata, pred_type)
@@ -435,6 +439,11 @@ predict_trans_rf = function(
     if (!is.null(x_ensemble) && !is.null(y_ensemble)) {
       pred_ensemble <- predict_ens(trans_rf_res, y_ensemble, x_ensemble, list(pred_0, pred_1, pred_2, pred_3), newdata, pred_type)
       pred_ensemble_val <- predict_ens(trans_rf_res, y_ensemble, x_ensemble, list(pred_0_val, pred_1_val, pred_2_val, pred_3_val), x_val, pred_type)
+      # Need to specify colnames here since predict_ens() does not
+      # automatically assign them.
+      colnames(pred_ensemble) <- colnames(pred_1)
+      colnames(pred_ensemble_val) <- colnames(pred_1_val)
+
     } else {
     # If ensemble samples aren't provided, use equal weighting
       pred_ensemble <- Reduce("*", list(pred_0, pred_1, pred_2, pred_3))
@@ -462,60 +471,72 @@ predict_trans_rf = function(
   
   out <- NULL
   if(pred_type == "prob") {
-    pred_source_pred_class <- apply(pred_source, 1, \(x) which.max(x) - 1)
-    pred_source_max_prob <- apply(pred_source, 1, max)
-    pred_0_pred_class <- apply(pred_0, 1, \(x) which.max(x) - 1)
-    pred_0_max_prob <- apply(pred_0, 1, max)
-    pred_1_pred_class <- apply(pred_1, 1, \(x) which.max(x) - 1)
-    pred_1_max_prob <- apply(pred_1, 1, max)
-    pred_2_pred_class <- apply(pred_2, 1, \(x) which.max(x) - 1)
-    pred_2_max_prob <- apply(pred_2, 1, max)
-    pred_3_pred_class <- apply(pred_3, 1, \(x) which.max(x) - 1)
-    pred_3_max_prob <- apply(pred_3, 1, max)
-    pred_ensemble_pred_class <- apply(pred_ensemble, 1, \(x) which.max(x) - 1)
-    pred_ensemble_max_prob <- apply(pred_ensemble, 1, max)
+    pred_source_pred_class <- colnames(pred_source)[apply(pred_source, 1, \(x) which.max(x))]
+    pred_source_max_prob <- pred_source
+    colnames(pred_source_max_prob) <- paste0("pred_source_prob_", colnames(pred_source_max_prob))
+    pred_0_pred_class <- colnames(pred_0)[apply(pred_0, 1, \(x) which.max(x))]
+    pred_0_max_prob <- pred_0
+    colnames(pred_0_max_prob) <- paste0("pred_0_prob_", colnames(pred_0_max_prob))
+    pred_1_pred_class <- colnames(pred_1)[apply(pred_1, 1, \(x) which.max(x))]
+    pred_1_max_prob <- pred_1
+    colnames(pred_1_max_prob) <- paste0("pred_1_prob_", colnames(pred_1_max_prob))
+    pred_2_pred_class <- colnames(pred_2)[apply(pred_2, 1, \(x) which.max(x))]
+    pred_2_max_prob <- pred_2
+    colnames(pred_2_max_prob) <- paste0("pred_2_prob_", colnames(pred_2_max_prob))
+    pred_3_pred_class <- colnames(pred_3)[apply(pred_3, 1, \(x) which.max(x))]
+    pred_3_max_prob <- pred_3
+    colnames(pred_3_max_prob) <- paste0("pred_3_prob_", colnames(pred_3_max_prob))
+    pred_ensemble_pred_class <- colnames(pred_ensemble)[apply(pred_ensemble, 1, \(x) which.max(x))]
+    pred_ensemble_max_prob <- pred_ensemble
+    colnames(pred_ensemble_max_prob) <- paste0("pred_ensemble_prob_", colnames(pred_ensemble_max_prob))
     
-    pred_source_val_pred_class <- apply(pred_source_val, 1, \(x) which.max(x) - 1)
-    pred_source_val_max_prob <- apply(pred_source_val, 1, max)
-    pred_0_val_pred_class <- apply(pred_0_val, 1, \(x) which.max(x) - 1)
-    pred_0_val_max_prob <- apply(pred_0_val, 1, max)
-    pred_1_val_pred_class <- apply(pred_1_val, 1, \(x) which.max(x) - 1)
-    pred_1_val_max_prob <- apply(pred_1_val, 1, max)
-    pred_2_val_pred_class <- apply(pred_2_val, 1, \(x) which.max(x) - 1)
-    pred_2_val_max_prob <- apply(pred_2_val, 1, max)
-    pred_3_val_pred_class <- apply(pred_3_val, 1, \(x) which.max(x) - 1)
-    pred_3_val_max_prob <- apply(pred_3_val, 1, max)
-    pred_ensemble_val_pred_class <- apply(pred_ensemble_val, 1, \(x) which.max(x) - 1)
-    pred_ensemble_val_max_prob <- apply(pred_ensemble_val, 1, max)
+    pred_source_val_pred_class <- colnames(pred_source_val)[apply(pred_source_val, 1, \(x) which.max(x))]
+    pred_source_val_max_prob <- pred_source_val
+    colnames(pred_source_val_max_prob) <- paste0("pred_source_val_prob_", colnames(pred_source_val_max_prob))
+    pred_0_val_pred_class <- colnames(pred_0_val)[apply(pred_0_val, 1, \(x) which.max(x))]
+    pred_0_val_max_prob <- pred_0_val
+    colnames(pred_0_val_max_prob) <- paste0("pred_0_val_prob_", colnames(pred_0_val_max_prob))
+    pred_1_val_pred_class <- colnames(pred_1_val)[apply(pred_1_val, 1, \(x) which.max(x))]
+    pred_1_val_max_prob <- pred_1_val
+    colnames(pred_1_val_max_prob) <- paste0("pred_1_val_prob_", colnames(pred_1_val_max_prob))
+    pred_2_val_pred_class <- colnames(pred_2_val)[apply(pred_2_val, 1, \(x) which.max(x))]
+    pred_2_val_max_prob <- pred_2_val
+    colnames(pred_2_val_max_prob) <- paste0("pred_2_val_prob_", colnames(pred_2_val_max_prob))
+    pred_3_val_pred_class <- colnames(pred_3_val)[apply(pred_3_val, 1, \(x) which.max(x))]
+    pred_3_val_max_prob <- pred_3_val
+    colnames(pred_3_val_max_prob) <- paste0("pred_3_val_prob_", colnames(pred_3_val_max_prob))
+    pred_ensemble_val_pred_class <- colnames(pred_ensemble_val)[apply(pred_ensemble_val, 1, \(x) which.max(x))]
+    pred_ensemble_val_max_prob <- pred_ensemble_val
+    colnames(pred_ensemble_val_max_prob) <- paste0("pred_ensemble_val_prob_", colnames(pred_ensemble_val_max_prob))
     
     #pred_ensemble_max_prob[pred_ensemble_max_prob == 1.0] <- 0.9999
 
     out <- data.frame(
       truth = y_val,
       pred_source = pred_source_pred_class,
-      pred_source_prob = pred_source_max_prob,
+      pred_source_max_prob,
       pred_0 = pred_0_pred_class,
-      pred_0_prob = pred_0_max_prob,
+      pred_0_max_prob,
       pred_1 = pred_1_pred_class,
-      pred_1_prob = pred_1_max_prob,
+      pred_1_max_prob,
       pred_2 = pred_2_pred_class,
-      pred_2_prob = pred_2_max_prob,
+      pred_2_max_prob,
       pred_3 = pred_3_pred_class,
-      pred_3_prob = pred_3_max_prob,
+      pred_3_max_prob,
       pred_ensemble = pred_ensemble_pred_class,
-      pred_ensemble_prob = pred_ensemble_max_prob,
+      pred_ensemble_max_prob,
       pred_source_val = pred_source_pred_class,
-      pred_source_val_prob = pred_source_max_prob,
+      pred_source_val_max_prob,
       pred_0_val = pred_0_val_pred_class,
-      pred_0_val_prob = pred_0_val_max_prob,
+      pred_0_val_max_prob,
       pred_1_val = pred_1_val_pred_class,
-      pred_1_val_prob = pred_1_val_max_prob,
+      pred_1_val_max_prob,
       pred_2_val = pred_2_val_pred_class,
-      pred_2_val_prob = pred_2_val_max_prob,
+      pred_2_val_max_prob,
       pred_3_val = pred_3_val_pred_class,
-      pred_3_val_prob = pred_3_val_max_prob,
+      pred_3_val_max_prob,
       pred_ensemble_val = pred_ensemble_val_pred_class,
-      pred_ensemble_val_prob = pred_ensemble_val_max_prob
+      pred_ensemble_val_max_prob
     )
   } else {
     out <- data.frame(
