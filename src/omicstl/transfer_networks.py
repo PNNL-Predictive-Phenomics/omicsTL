@@ -52,11 +52,14 @@ class MultiViewModel:
             self.test_metric: list[float] = []
             self.prediction_mode = prediction_mode
 
-        def predict(self, views: list[pd.DataFrame]) -> np.ndarray:
+        def predict(self, views: list[pd.DataFrame], return_probabilities: bool = False) -> np.ndarray:
             """Make predictions using the model based on input views.
 
             Args:
                     views: List of pandas DataFrames containing the input data for each view
+                    return_probabilities: If True, and the prediction mode is classification, 
+                                          return predicted probabilities instead of predicted 
+                                          classes. Defaults to False
 
             Returns:
                     np.ndarray: Predictions in the format determined by prediction_mode
@@ -76,7 +79,12 @@ class MultiViewModel:
                     case PredictionMode.REGRESSION:
                         predictions = yhat.view(-1).detach().cpu().numpy()
                     case PredictionMode.CLASSIFICATION:
-                        predictions = yhat.argmax(dim=1).detach().cpu().numpy()
+                        if return_probabilities:
+                            # Apply softmax to calculate probabilities
+                            predictions = torch.softmax(yhat, dim = 1).detach().cpu().numpy()
+                        else:
+                            # Return the class with the highest probability
+                            predictions = yhat.argmax(dim=1).detach().cpu().numpy()
                     case _:
                         raise ValueError(f"Unknown prediction mode: {self.prediction_mode}")
 

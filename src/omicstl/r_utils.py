@@ -13,3 +13,6 @@ def pd2df(pd: pd.DataFrame) -> DataFrame:
     """Convert pandas dataframe to R dataframe."""
     with (ro.default_converter + pandas2ri.converter).context():
         return ro.conversion.get_conversion().py2rpy(pd)
+    
+def set_seed(seed: int) -> None:
+    ro.r["set.seed"](seed)

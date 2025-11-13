@@ -2,15 +2,16 @@
 
 import logging
 from dataclasses import dataclass
-from typing import Any, NamedTuple
+from typing import Any, NamedTuple, Tuple
 
 import numpy as np
 import pandas as pd
 from sklearn.model_selection import KFold, LeaveOneOut, ParameterGrid, StratifiedKFold
 from torch import device
+import re
 
 from omicstl.simulation_utils.data_utils import DatasetContainer
-from omicstl.transfer_forest import TransferForest
+from omicstl.transfer_forest import TransferForest, PredictionMode, load_r_functions
 from omicstl.transfer_networks import TransferMLP, TransferVAE
 
 logger = logging.getLogger(__name__)
@@ -97,12 +98,14 @@ def calculate_metrics(
     true_values: pd.Series | np.ndarray,
     predicted_values: pd.Series | np.ndarray,
     is_classification: bool,
+    predicted_probs: np.ndarray = None
 ) -> dict[str, float]:
     """Calculate evaluation metrics for model predictions.
 
     Args:
     true_values: Ground truth values
-    predicted_values: Model predictions
+    predicted_values: Model predictions (class labels for classification)
+    predicted_probs: Model predicted probabilities (must be specified only for classification)
     is_classifiction: Is the model a classification model
 
     Returns:
@@ -137,18 +140,30 @@ def calculate_metrics(
     metrics["recall"] = np.nan
         
     if is_classification:
-        predicted_classes = np.array([2 if x >= 0.5 else 1 for x in predicted_values])
-
         unique_classes = np.unique(true_values)
-        metrics["acc"] = float(accuracy_score(true_values, predicted_classes))
-        metrics["roc_auc"] = float(roc_auc_score(true_values, predicted_values))
-
-        if len(unique_classes) > 1:
-            metrics["f1"] = float(f1_score(true_values, predicted_classes))
-            metrics["precision"] = float(precision_score(true_values, predicted_classes, zero_division=0))
-            metrics["recall"] = float(recall_score(true_values, predicted_classes, zero_division=0))
-            metrics["mcc"] = float(matthews_corrcoef(true_values, predicted_classes))
         
+        predicted_classes = predicted_values
+
+        metrics["acc"] = float(accuracy_score(y_true = true_values, 
+                                              y_pred = predicted_classes))
+        metrics["roc_auc"] = float(roc_auc_score(y_true = true_values, 
+                                                 y_score = predicted_probs,
+                                                 multi_class = "ovr" if len(unique_classes) > 2 else "raise",
+                                                 average = 'weighted'))
+        metrics["mcc"] = float(matthews_corrcoef(y_true = true_values, 
+                                                 y_pred = predicted_classes))
+        metrics["f1"] = float(f1_score(y_true = true_values, 
+                                       y_pred = predicted_classes, 
+                                       average = "weighted" if len(unique_classes) > 2 else "binary"))
+        metrics["precision"] = float(precision_score(y_true = true_values, 
+                                                     y_pred = predicted_classes, 
+                                                     average = "weighted" if len(unique_classes) > 2 else "binary",
+                                                     zero_division=0))
+        metrics["recall"] = float(recall_score(y_true = true_values, 
+                                               y_pred = predicted_classes, 
+                                               average = "weighted" if len(unique_classes) > 2 else "binary",
+                                               zero_division=0))
+
         return metrics
 
     metrics["rmse"] = float(np.sqrt(mean_squared_error(true_values, predicted_values)))
@@ -254,7 +269,32 @@ def evaluate_model(
 
     """
     predictions = model.__getattribute__(model_id).predict([data.features])
-    metrics = calculate_metrics(data.response, predictions, is_classification)
+
+    if is_classification:
+        predictions = pd.Series(predictions)
+        predictions_probs = model.__getattribute__(model_id).predict([data.features], return_probabilities = True)
+        if predictions_probs.shape[1] == 2:
+            predictions_probs = predictions_probs[:, 1]
+
+        # using training instead of validation to capture unique 
+        # values since it should capture all possible values of response, whereas validation set may be unbalanced and omit classes
+        # This code is assuming that the categorical responses are coded
+        # beginning from 1, and not from 0. So a binary response would be
+        # (1,2), not (0,1). Similarly a tertiary response would be (1,2,3),
+        # not (0,1,2). If the native coding for categorical values in the
+        # data objects of omicstl is changed, this code should be changed
+        # too. 
+        response_unique_sorted = sorted(data.response.unique()) 
+        mapping = {val - 1: val for val in response_unique_sorted}
+        predictions = predictions.map(mapping)
+        metrics = calculate_metrics(true_values = data.response, 
+                                    predicted_values = predictions, 
+                                    is_classification = is_classification,
+                                    predicted_probs = predictions_probs)
+    else:
+        metrics = calculate_metrics(true_values = data.response, 
+                                    predicted_values = predictions, 
+                                    is_classification = is_classification)
 
     results_row = {
         "scenario": context.scenario,
@@ -634,8 +674,33 @@ def tune_model_cv(
             )
 
             predictions = model.source.predict([fold_data.validation.features])
+            predictions = pd.Series(predictions)
 
-            metrics = calculate_metrics(fold_data.validation.response, predictions, is_classification)
+            if is_classification:
+                predictions_probs = model.source.predict([fold_data.validation.features], return_probabilities = True)
+                if predictions_probs.shape[1] == 2:
+                    predictions_probs = predictions_probs[:, 1]
+
+                # using training instead of validation to capture unique 
+                # values since it should capture all possible values of response, whereas validation set may be unbalanced and omit classes
+                # This code is assuming that the categorical responses are coded
+                # beginning from 1, and not from 0. So a binary response would be
+                # (1,2), not (0,1). Similarly a tertiary response would be (1,2,3),
+                # not (0,1,2). If the native coding for categorical values in the
+                # data objects of omicstl is changed, this code should be changed
+                # too. 
+                response_unique_sorted = sorted(fold_data.train.response.unique()) 
+                mapping = {val - 1: val for val in response_unique_sorted}
+                predictions = predictions.map(mapping)
+                metrics = calculate_metrics(true_values = fold_data.validation.response, 
+                                            predicted_values = predictions, 
+                                            is_classification = is_classification,
+                                            predicted_probs = predictions_probs)
+            else:
+                metrics = calculate_metrics(true_values = fold_data.validation.response, 
+                                            predicted_values = predictions, 
+                                            is_classification = is_classification)
+
             metrics.update(hyperparams)
             metrics["fold"] = fold_data.fold_idx
 
@@ -970,10 +1035,9 @@ def fit_dl_model(
 
     return results, model, model_nosource
 
-
 def fit_rf_model(
     data_container: DatasetContainer,
-) -> pd.DataFrame:
+) -> Tuple[pd.DataFrame, TransferForest]:
     """Fit a random forest transfer learning model.
 
     Args:
@@ -983,6 +1047,8 @@ def fit_rf_model(
                                     DataFrame with model evaluation results
 
     """
+    load_r_functions()
+
     logger.info("Starting random forest model fitting")
     results = create_results_df()
     replicate, scenario = data_container.id_tuple
@@ -1020,21 +1086,25 @@ def fit_rf_model(
         logger.info("Set model for regression task")
 
     logger.info("Training model on source data")
+    # print("TRAINING")
     transfer_forest.train_models(
         views=[source_data.features],
         response=source_data.response,
     )
 
+    # print("UPDATING")
     logger.info("Updating model with target data")
     transfer_forest.update_models(
         views=[target_data.features],
         response=target_data.response,
     )
 
+    # print("TESTING")
     if hasattr(data_container, "target_test_data") and data_container.target_test_data:
         logger.info(f"Found {len(data_container.target_test_data)} test datasets")
         for i, test_dataset in enumerate(data_container.target_test_data):
             logger.info(f"Processing test dataset {i + 1}/{len(data_container.target_test_data)}")
+
             test_data = create_data_partition(
                 data=test_dataset,
                 response_id=response_id,
@@ -1042,21 +1112,98 @@ def fit_rf_model(
             )
             logger.info(f"Test data {i} shape: {test_data.features.shape}")
 
+            ensemble_views = None
+            ensemble_response = None
+            if data_container.target_ensemble_data is not None:
+                ensemble_data = create_data_partition(
+                    data_container.target_ensemble_data,
+                    response_id=response_id,
+                    feature_cols=feature_cols
+                )
+
+                ensemble_views = [ensemble_data.features]
+                ensemble_response = ensemble_data.response
+
+            # print("PREDICT")
+            # print(test_dataset.shape)
+            # print(test_data.features.shape)
             test_predictions = transfer_forest.generate_predictions(
                 views=[test_data.features],
                 response=test_data.response,
                 validation_views=[test_data.features],
                 validation_response=test_data.response,
+                ensemble_views=ensemble_views,
+                ensemble_response=ensemble_response,
                 integration_type=TransferForest.IntegrationType.NONE,
             )
 
             if not test_predictions:
                 logger.warning(f"Empty predictions returned for test data {i}")
-
+            
             test_predictions = test_predictions[0]
-            for model_type, prediction in test_predictions.items():
+
+            # Grouping definition and new keys
+            groupings = {
+                'truth': ['truth'],
+                'pred_source_full': [r'^pred_source(?!.*val).*'],
+                'pred_source_full_val': [r'^pred_source.*val.*'],
+                'pred_0_full': [r'^pred_0(?!.*val).*'],
+                'pred_0_full_val': [r'^pred_0.*val.*'],
+                'pred_1_full': [r'^pred_1(?!.*val).*'],
+                'pred_1_full_val': [r'^pred_1.*val.*'],
+                'pred_2_full': [r'^pred_2(?!.*val).*'],
+                'pred_2_full_val': [r'^pred_2.*val.*'],
+                'pred_3_full': [r'^pred_3(?!.*val).*'],
+                'pred_3_full_val': [r'^pred_3.*val.*'],
+                'pred_ensemble_full': [r'^pred_ensemble(?!.*val).*'],
+                'pred_ensemble_full_val': [r'^pred_ensemble.*val.*']
+            }
+
+            # Initialize the new dictionary where values will be reorganized
+            test_predictions_reorg = {}
+
+            # Iterate over each group, apply regex filters, and build dataframes
+            for new_key, patterns in groupings.items():
+                matched_keys = []
+                for pattern in patterns:
+                    # Use regex to match keys in the dictionary
+                    matched_keys.extend([key for key in test_predictions.keys() if re.match(pattern, key)])
+                
+                if matched_keys:
+                    # Create a pandas DataFrame by column-binding arrays corresponding to matched keys
+                    df = pd.DataFrame({key: test_predictions[key] for key in matched_keys})
+                    test_predictions_reorg[new_key] = df
+
+
+            for model_type, prediction in test_predictions_reorg.items():
                 logger.info(f"Calculating metrics for test data {i} with model type: {model_type}")
-                test_metrics = calculate_metrics(test_data.response, prediction, is_classification)
+                if str.endswith(model_type, "truth"):
+                    continue
+                
+                if is_classification:
+                    model_type_base = model_type.replace("_full", "")
+                    predicted_classes = prediction[model_type_base].to_numpy()
+                    predicted_classes = [int(x) for x in predicted_classes]
+
+                    predicted_probs = prediction.drop(columns = model_type_base)
+                    if predicted_probs.shape[1] == 2:
+                        predicted_probs = predicted_probs.iloc[:,1].to_numpy()
+                    else:
+                        predicted_probs = predicted_probs.to_numpy()
+
+                    test_metrics = calculate_metrics(true_values = test_data.response, 
+                                                     predicted_values = predicted_classes, 
+                                                     is_classification = is_classification,
+                                                     predicted_probs = predicted_probs)
+
+                else:
+                    model_type_base = model_type.replace("_full", "")
+                    predicted_values = prediction[model_type_base].to_numpy()
+                    test_metrics = calculate_metrics(true_values = test_data.response, 
+                                                     predicted_values = predicted_values, 
+                                                     is_classification = is_classification)
+
+            
                 test_row = {
                     "scenario": scenario,
                     "replicate": replicate,
@@ -1070,3 +1217,90 @@ def fit_rf_model(
 
     logger.info(f"Model fitting completed. Results shape: {results.shape}")
     return results, transfer_forest
+
+def update_rf_model(
+    pretrained_model : TransferForest,
+    response_id : str,
+    target_data : pd.DataFrame,
+    target_test_data : list[pd.DataFrame] | None,
+    target_ensemble_data : pd.DataFrame | None
+) -> Tuple[pd.DataFrame, TransferForest]:
+    is_classification = pretrained_model._prediction_mode == PredictionMode.CLASSIFICATION
+    logger.info(f"Task type: {'Classification' if is_classification else 'Regression'}")
+
+    feature_cols = get_feature_columns(
+        data=target_data,
+        response_id=response_id,
+    )
+    logger.info(f"Using {len(feature_cols)} features for modeling")
+
+    target_data_update = create_data_partition(
+        data=target_data,
+        response_id=response_id,
+        feature_cols=feature_cols,
+    )
+
+    transfer_model = pretrained_model.copy()
+
+    transfer_model.update_models([target_data_update.features], target_data_update.response)
+
+    if target_test_data is not None:
+        logger.info(f"Found {len(target_test_data)} test datasets")
+        for i, test_dataset in enumerate(target_test_data):
+            logger.info(f"Processing test dataset {i + 1}/{len(target_test_data)}")
+
+            test_data = create_data_partition(
+                data=test_dataset,
+                response_id=response_id,
+                feature_cols=feature_cols,
+            )
+
+            logger.info(f"Test data {i} shape: {test_data.features.shape}")
+
+            ensemble_views = None
+            ensemble_response = None
+            if target_ensemble_data is not None:
+                ensemble_data = create_data_partition(
+                    target_ensemble_data,
+                    response_id=response_id,
+                    feature_cols=feature_cols
+                )
+
+                ensemble_views = [ensemble_data.features]
+                ensemble_response = ensemble_data.response
+
+            # print("PREDICT")
+            # print(test_dataset.shape)
+            # print(test_data.features.shape)
+            test_predictions = transfer_model.generate_predictions(
+                views=[test_data.features],
+                response=test_data.response,
+                validation_views=[test_data.features],
+                validation_response=test_data.response,
+                ensemble_views=ensemble_views,
+                ensemble_response=ensemble_response,
+                integration_type=TransferForest.IntegrationType.NONE,
+            )
+
+            if not test_predictions:
+                logger.warning(f"Empty predictions returned for test data {i}")
+
+            # print("CALCULATE")
+            test_predictions = test_predictions[0]
+            for model_type, prediction in test_predictions.items():
+                logger.info(f"Calculating metrics for test data {i} with model type: {model_type}")
+                if str.endswith(model_type, "_prob"):
+                    continue
+                
+                test_metrics = calculate_metrics(test_data.response, prediction, is_classification)
+                test_row = {
+                    "split": f"test_{i}",
+                    "model": "rf",
+                    "model_type": f"{model_type}",
+                    "model_id": "target",
+                    **test_metrics,
+                }
+                results = pd.concat([results, pd.DataFrame([test_row])], ignore_index=True)
+
+    logger.info(f"Model fitting completed. Results shape: {results.shape}")
+    return results, transfer_model

@@ -41,8 +41,6 @@ def generate_synth_data(
         if ncats is not None:
             response_parameters_r = ro.ListVector({"ncats": ncats, "quantile": quantile})
 
-    print(response_parameters_r)
-
     result_data = ro.r["data_generator_wrapper"](
         data=pd2df(data),
         num_features=num_features,

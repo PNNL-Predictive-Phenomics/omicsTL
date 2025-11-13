@@ -37,6 +37,13 @@ class TransferForest:
         self.source_models: list = []
         self.transfer_models: list = []
 
+    def copy(self) -> "TransferForest":
+        new_transfer_forest = TransferForest()
+        new_transfer_forest.source_models = self.source_models
+        new_transfer_forest.transfer_models = self.transfer_models
+        new_transfer_forest._prediction_mode = self._prediction_mode
+        return new_transfer_forest
+
     class ModelType(Enum):
         """An enum for specifying a transfer model. Used to elimate dependancy on strings."""
 
@@ -140,7 +147,7 @@ class TransferForest:
     def update_models(
         self,
         views: list[pd.DataFrame],
-        response: pd.DataFrame,
+        response: pd.Series,
         model_type: ModelType | None = None,
         update_type: UpdateType = UpdateType.SOURCE,
         override: bool = False,
@@ -182,13 +189,11 @@ class TransferForest:
 
         for index, view in enumerate(views):
             reference_model = reference_models[index]
-            source_importance = robjects.r["importancenew"](reference_model, 2)
             self.transfer_models.append(
                 robjects.r["train_trans_rf"](
                     x=pd2df(view),
                     y=self._resolve_response(response),
-                    rf_source=reference_model,
-                    var_importance_source=source_importance,
+                    rf_source=reference_model
                 ),
             )
 
@@ -198,6 +203,8 @@ class TransferForest:
         response: pd.DataFrame,
         validation_views: list[pd.DataFrame],  # = None
         validation_response: pd.DataFrame,  # = None
+        ensemble_views: list[pd.DataFrame] | None = None,
+        ensemble_response: pd.DataFrame | None = None,
         integration_type: IntegrationType = IntegrationType.NONE,
     ) -> list[dict]:
         """Predicts using the transfer models on new data with optional integration of predictions across views.
@@ -233,7 +240,9 @@ class TransferForest:
                 newdata=pd2df(view),
                 x_val=pd2df(validation_views[index]),
                 y_val=self._resolve_response(validation_response),
-            )
+                x_ensemble = robjects.NULL if ensemble_views is None else pd2df(ensemble_views[index]),
+                y_ensemble = robjects.NULL if ensemble_response is None else self._resolve_response(ensemble_response)
+            ) # type: ignore
             prediction_dicts.append(df2pd(res).to_dict(orient="list"))
 
             if integration_type != self.IntegrationType.WEIGHTED:
@@ -244,6 +253,8 @@ class TransferForest:
                 newdata=pd2df(validation_views[index]),
                 x_val=pd2df(validation_views[index]),
                 y_val=self._resolve_response(validation_response),
+                x_ensemble = robjects.NULL if ensemble_views is None else ensemble_views[index],
+                y_ensemble = robjects.NULL if ensemble_response is None else ensemble_response
             )
             validation_dicts.append(df2pd(res).to_dict(orient="list"))
 
