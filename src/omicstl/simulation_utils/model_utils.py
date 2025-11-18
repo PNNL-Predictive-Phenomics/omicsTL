@@ -285,8 +285,13 @@ def evaluate_model(
         # data objects of omicstl is changed, this code should be changed
         # too. 
         response_unique_sorted = sorted(data.response.unique()) 
-        mapping = {val - 1: val for val in response_unique_sorted}
-        predictions = predictions.map(mapping)
+        preds_unique_sorted = sorted(predictions.unique()) 
+        sort_diff = [a - b for a, b in zip(response_unique_sorted, preds_unique_sorted)]
+        sort_diff_val = set(sort_diff).pop().item()
+        if sort_diff_val != 0:
+            # mapping = {val - 1: val for val in response_unique_sorted}
+            mapping = {val - sort_diff_val: val for val in response_unique_sorted}
+            predictions = predictions.map(mapping)
         metrics = calculate_metrics(true_values = data.response, 
                                     predicted_values = predictions, 
                                     is_classification = is_classification,
@@ -689,9 +694,13 @@ def tune_model_cv(
                 # not (0,1,2). If the native coding for categorical values in the
                 # data objects of omicstl is changed, this code should be changed
                 # too. 
-                response_unique_sorted = sorted(fold_data.train.response.unique()) 
-                mapping = {val - 1: val for val in response_unique_sorted}
-                predictions = predictions.map(mapping)
+                response_unique_sorted = sorted(fold_data.train.response.unique())
+                preds_unique_sorted = sorted(predictions.unique())
+                sort_diff = [a - b for a, b in zip(response_unique_sorted, preds_unique_sorted)]
+                sort_diff_val = set(sort_diff).pop().item()
+                if sort_diff_val != 0:
+                    mapping = {val - sort_diff_val: val for val in response_unique_sorted}
+                    predictions = predictions.map(mapping) 
                 metrics = calculate_metrics(true_values = fold_data.validation.response, 
                                             predicted_values = predictions, 
                                             is_classification = is_classification,
