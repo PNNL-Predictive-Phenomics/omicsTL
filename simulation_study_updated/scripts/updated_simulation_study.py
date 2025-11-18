@@ -17,12 +17,12 @@ from omicstl.simulation_utils.model_utils import fit_rf_model
 from omicstl.simulation_utils.data_generation import response_function, generate_synth_data
 
 # Read in source, target_transfer, and target_validation datasets.
-# base_source_data = pd.read_csv('/qfs/people/flor829/PPI_TIMED/timed-hpc/viral_use_case/data/source_dset.csv').set_index("SampleID")
-base_source_data = pd.read_csv('/workspaces/timed-hpc/viral_use_case/data/source_dset.csv').set_index("SampleID")
+base_source_data = pd.read_csv('/qfs/people/flor829/PPI_TIMED/timed-hpc/viral_use_case/data/source_dset.csv').set_index("SampleID")
+# base_source_data = pd.read_csv('/workspaces/timed-hpc/viral_use_case/data/source_dset.csv').set_index("SampleID")
 base_source_data = base_source_data.drop('Resp', axis=1)
 
-# base_target_transfer_data = pd.read_csv('/qfs/people/flor829/PPI_TIMED/timed-hpc/viral_use_case/data/target_transfer.csv').set_index("SampleID")
-base_target_transfer_data = pd.read_csv('/workspaces/timed-hpc/viral_use_case/data/target_transfer.csv').set_index("SampleID")
+base_target_transfer_data = pd.read_csv('/qfs/people/flor829/PPI_TIMED/timed-hpc/viral_use_case/data/target_transfer.csv').set_index("SampleID")
+# base_target_transfer_data = pd.read_csv('/workspaces/timed-hpc/viral_use_case/data/target_transfer.csv').set_index("SampleID")
 base_target_transfer_data = base_target_transfer_data.drop('Resp', axis=1)
 
 # We define a pandas dataframe that represents all combinations of
@@ -75,11 +75,14 @@ param_grid = {
 
 # Uncomment if running in the context of the HPC.
 # sys.argv[0] is the script name, hence why we start at 1
-# idx = int(sys.argv[1])-1
-# nreps = int(sys.argv[2])
+idx = int(sys.argv[1])-1
+nreps = int(sys.argv[2])
+setno = int(sys.argv[3])
 
-idx = 3067
-nreps = 2
+idx = idx + 1000*(setno - 1)
+
+# idx = 3067
+# nreps = 2
 
 print(idx)
 print(nreps)
@@ -101,7 +104,7 @@ if response_fn_complexity == "linear":
 
 num_features = math.floor(feature_ratio * max(source_size, target_size))
 
-i = 0
+# i = 0
 # Begin Loop --------------------------------------------------------------
 random.seed(idx)
 for i in range(0, nreps):
@@ -184,12 +187,12 @@ for i in range(0, nreps):
         print(f"Error setting up dataset for condition set={idx}, replicate={i}")
     
     # Define where to save output
-    # mlp_outfile = f"/qfs/people/flor829/PPI_TIMED/timed-hpc/viral_use_case/results/mlp_expcond_{idx}_replicate_{i}.csv"
-    # vae_outfile = f"/qfs/people/flor829/PPI_TIMED/timed-hpc/viral_use_case/results/vae_expcond_{idx}_replicate_{i}.csv"
-    # rf_outfile = f"/qfs/people/flor829/PPI_TIMED/timed-hpc/viral_use_case/results/rf_expcond_{idx}_replicate_{i}.csv"
-    mlp_outfile = f"/workspaces/timed-hpc/simulation_study_updated/results/mlp_expcond_{idx}_replicate_{i}.csv"
-    vae_outfile = f"/workspaces/timed-hpc/simulation_study_updated/results/vae_expcond_{idx}_replicate_{i}.csv"
-    rf_outfile = f"/workspaces/timed-hpc/simulation_study_updated/results/rf_expcond_{idx}_replicate_{i}.csv"
+    mlp_outfile = f"/qfs/projects/ppi_timed/jef_new_sim_study_output/results/mlp_expcond_{idx}_replicate_{i}.csv"
+    vae_outfile = f"/qfs/projects/ppi_timed/jef_new_sim_study_output/results/vae_expcond_{idx}_replicate_{i}.csv"
+    rf_outfile = f"/qfs/projects/ppi_timed/jef_new_sim_study_output/results/rf_expcond_{idx}_replicate_{i}.csv"
+    # mlp_outfile = f"/workspaces/timed-hpc/simulation_study_updated/results/mlp_expcond_{idx}_replicate_{i}.csv"
+    # vae_outfile = f"/workspaces/timed-hpc/simulation_study_updated/results/vae_expcond_{idx}_replicate_{i}.csv"
+    # rf_outfile = f"/workspaces/timed-hpc/simulation_study_updated/results/rf_expcond_{idx}_replicate_{i}.csv"
 
     # For modeling only, set a constant seed.
     torch.manual_seed(42)
