@@ -25,7 +25,8 @@ def generate_synth_data(
         num_samples : int,
         response_fn : ro._reval,
         response_parameters : dict | None = None,
-        snr : float = 1
+        snr : float = 1,
+        prior_lc_info : pd.DataFrame | None = None
     ) -> tuple[pd.DataFrame, pd.DataFrame, typing.Union[ro.FloatVector, NULLType]]:
     
     ro.r["Sys.setenv"](OMICSTL_PKG_ROOT = _PKG_ROOT()) # type: ignore
@@ -41,13 +42,26 @@ def generate_synth_data(
         if ncats is not None:
             response_parameters_r = ro.ListVector({"ncats": ncats, "quantile": quantile})
 
-    result_data = ro.r["data_generator_wrapper"](
+    if prior_lc_info is None:
+        result_data = ro.r["data_generator_wrapper"](
         data=pd2df(data),
         num_features=num_features,
         num_samples=num_samples,
         response_fn=response_fn,
         response_parameters=ro.NULL if response_parameters is None else response_parameters_r,
         snr=snr
-    ) # type: ignore
+        )
+    else:
+        result_data = ro.r["data_generator_wrapper"](
+        data=pd2df(data),
+        num_features=num_features,
+        num_samples=num_samples,
+        response_fn=response_fn,
+        response_parameters=ro.NULL if response_parameters is None else response_parameters_r,
+        snr=snr,
+        # Including this is crucial. Otherwise, target and source datasets are
+        # not paired!
+        prior_lc_info=pd2df(prior_lc_info)
+        )
 
     return pd.DataFrame(df2pd(result_data.rx2("data"))), df2pd(result_data.rx2("lc_info")), result_data.rx2("cut_point")
