@@ -2,10 +2,11 @@
 #SBATCH -A PPI_TIMED
 #SBATCH -t 0-04:00:00
 #SBATCH -J viral_exp
-#SBATCH -o /qfs/people/flor829/PPI_TIMED/out/%J.stdout
-#SBATCH -e /qfs/people/flor829/PPI_TIMED/err/%J.stderr
+#SBATCH -o /qfs/projects/ppi_timed/jef_new_sim_study_output/out/%J.stdout
+#SBATCH -e /qfs/projects/ppi_timed/jef_new_sim_study_output/err/%J.stderr
 
 NREPS=$1
+SETNO=$2
 
 export PYTHONPATH="/people/$USER/.conda/envs/omicstl/lib/python3.12/site-packages:$PYTHONPATH"
 export PATH="/people/$USER/.conda/envs/omicstl/bin:$PATH"
@@ -16,4 +17,4 @@ module load R/4.4.3
 module load gcc/14.2.0
 conda activate omicstl
 
-python updated_simulation_study.py ${SLURM_ARRAY_TASK_ID} $NREPS
+python updated_simulation_study.py ${SLURM_ARRAY_TASK_ID} $NREPS $SETNO
