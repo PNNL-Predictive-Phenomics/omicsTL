@@ -60,5 +60,13 @@ cov_html/
 .Rhistory
 .Rproj.user/
 
+# local python envs
+venv/
+docker_env/
+.venv/
+__pycache__/
+*.pyc
+
+
 
 
