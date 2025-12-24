@@ -486,7 +486,7 @@ predict_trans_rf = function(
     pred_3_pred_class <- colnames(pred_3)[apply(pred_3, 1, \(x) which.max(x))]
     pred_3_max_prob <- pred_3
     colnames(pred_3_max_prob) <- paste0("pred_3_prob_", colnames(pred_3_max_prob))
-    pred_ensemble_pred_class <- colnames(pred_ensemble)[apply(pred_ensemble, 1, \(x) which.max(x))]
+    pred_ensemble_pred_class <- colnames(pred_ensemble)[unlist(apply(pred_ensemble, 1, \(x) which.max(x)))]
     pred_ensemble_max_prob <- pred_ensemble
     colnames(pred_ensemble_max_prob) <- paste0("pred_ensemble_prob_", colnames(pred_ensemble_max_prob))
     
