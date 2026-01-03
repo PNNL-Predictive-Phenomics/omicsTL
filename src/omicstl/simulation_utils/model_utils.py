@@ -142,24 +142,30 @@ def calculate_metrics(
     if is_classification:
         unique_classes = np.unique(true_values)
         
+        truth_classes = true_values
         predicted_classes = predicted_values
 
-        metrics["acc"] = float(accuracy_score(y_true = true_values, 
+        # Remap binary classification from 1, 2 to 0, 1
+        if len(unique_classes) == 2 and np.min(truth_classes) == 1:
+            truth_classes = truth_classes - 1
+            predicted_classes = predicted_classes - 1
+
+        metrics["acc"] = float(accuracy_score(y_true = truth_classes, 
                                               y_pred = predicted_classes))
-        metrics["roc_auc"] = float(roc_auc_score(y_true = true_values, 
+        metrics["roc_auc"] = float(roc_auc_score(y_true = truth_classes, 
                                                  y_score = predicted_probs,
                                                  multi_class = "ovr" if len(unique_classes) > 2 else "raise",
                                                  average = 'weighted'))
-        metrics["mcc"] = float(matthews_corrcoef(y_true = true_values, 
+        metrics["mcc"] = float(matthews_corrcoef(y_true = truth_classes, 
                                                  y_pred = predicted_classes))
-        metrics["f1"] = float(f1_score(y_true = true_values, 
+        metrics["f1"] = float(f1_score(y_true = truth_classes, 
                                        y_pred = predicted_classes, 
                                        average = "weighted" if len(unique_classes) > 2 else "binary"))
-        metrics["precision"] = float(precision_score(y_true = true_values, 
+        metrics["precision"] = float(precision_score(y_true = truth_classes, 
                                                      y_pred = predicted_classes, 
                                                      average = "weighted" if len(unique_classes) > 2 else "binary",
                                                      zero_division=0))
-        metrics["recall"] = float(recall_score(y_true = true_values, 
+        metrics["recall"] = float(recall_score(y_true = truth_classes, 
                                                y_pred = predicted_classes, 
                                                average = "weighted" if len(unique_classes) > 2 else "binary",
                                                zero_division=0))
@@ -791,12 +797,12 @@ def create_data_partition(
     """Create a data partition from a DataFrame.
 
     Args:
-                                    data: DataFrame containing features and response
-                                    feature_cols: List of feature column names
-                                    row_ids: Optional list of row indices to subset the data. If None, uses all data.
+        data: DataFrame containing features and response
+        feature_cols: List of feature column names
+        row_ids: Optional list of row indices to subset the data. If None, uses all data.
 
     Returns:
-                                    DataPartition object
+        DataPartition object
 
     """
     subset_data = data.loc[row_ids] if row_ids else data
@@ -813,18 +819,18 @@ def fit_dl_model(
     torch_device: device,
     param_grid: dict[str, float | bool | str] | None = None,
     **kwargs: float | str,
-) -> pd.DataFrame:
+) -> tuple[pd.DataFrame, TransferMLP | TransferVAE, TransferMLP | TransferVAE]:
     """Fit a deep learning model with optional hyperparameter tuning via cross-validation.
 
     Args:
-                                                                    data_container: Container with source and target data
-                                                                    model_type: Type of model to fit ("mult_mlp" or "mult_vae")
-                                                                    torch_device: Torch device for deep learning
-                                                                    param_grid: Dictionary of parameter grids for tuning
-                                                                    **kwargs: Parameters for the model if not tuning
+        data_container: Container with source and target data
+        model_type: Type of model to fit ("mult_mlp" or "mult_vae")
+        torch_device: Torch device for deep learning
+        param_grid: Dictionary of parameter grids for tuning
+        **kwargs: Parameters for the model if not tuning
 
     Returns:
-                                                                    DataFrame with model evaluation results
+        DataFrame with model evaluation results
 
     """
     results = create_results_df()
