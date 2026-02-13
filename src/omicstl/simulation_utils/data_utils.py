@@ -193,6 +193,8 @@ class DatasetManager:
                 grouped_paths[key]["target_ensemble"] = str(file_path)
             elif file_type == "target_test":
                 grouped_paths[key]["target_test"].append(str(file_path))
+            elif file_type == "target_ensemble":
+                grouped_paths[key]["target_ensemble"] = str(file_path)
 
         self.grouped_paths = dict(grouped_paths)
         return self
@@ -304,6 +306,12 @@ class DatasetManager:
         else:
             logger.warning("No target test datasets found for ID tuple %s", id_tuple)
 
+        # Load target ensemble if available
+        if paths["target_ensemble"]:
+            datasets["target_ensemble"] = pd.read_csv(paths["target_ensemble"], **read_csv_kwargs)
+        else:
+            logger.warning(f"Ensemble samples for ID tuple {id_tuple} not found")
+
         return datasets
 
     def load_dataset_container(
@@ -330,8 +338,7 @@ class DatasetManager:
         datasets = self.load_datasets(id_tuple, read_csv_kwargs)
 
         source_data=datasets["source"]
-        # print(source_data)
-        # print(type(source_data))
+
         if not isinstance(source_data, pd.DataFrame):
             msg = f"Read source data is of type {type(source_data)} instead of pd.DataFrame"
             raise ValueError(msg)
@@ -341,7 +348,7 @@ class DatasetManager:
             msg = "Read target data is not dataframe."
             raise ValueError(msg)
         
-        ensemble_data=datasets["target_ensemble"]
+        target_ensemble_data=datasets["target_ensemble"]
         if not isinstance(target_ensemble_data, pd.DataFrame) and ensemble_data is not None:
             msg = "Read target_ensemble data is not dataframe."
             raise ValueError(msg)
@@ -356,7 +363,7 @@ class DatasetManager:
             source_data=source_data,
             target_data=target_data,
             target_test_data=target_test_data,
-            target_ensemble_data=ensemble_data,
+            target_ensemble_data=target_ensemble_data,
             id_tuple=id_tuple,
         )
 

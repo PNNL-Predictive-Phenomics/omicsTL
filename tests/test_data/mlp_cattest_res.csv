@@ -1,3 +1,0 @@
-,scenario,replicate,split,model,model_type,model_id,rmse,mae,acc,f1,mcc,precision,recall,dropout,hidden_dim_size,source_epochs,target_epochs,freeze,z_dim
-0,51,1,test_0,mult_vae,mult_vae,target,,,0.42,0.43137254901960786,-0.15743017592414318,0.4583333333333333,0.4074074074074074,0.3,32.0,5.0,5.0,none,32.0
-1,51,1,test_0,mult_vae,mult_vae,target_nosource,,,0.46,0.0,0.0,0.0,0.0,0.3,32.0,5.0,5.0,none,32.0

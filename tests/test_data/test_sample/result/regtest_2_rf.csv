@@ -1,0 +1,13 @@
+split,model,model_type,model_id,rmse,mae,acc,f1,mcc,precision,recall,roc_auc
+test_0,rf,pred_source_full,target,76.63796076393679,76.61920705586417,,,,,,
+test_0,rf,pred_source_full_val,target,76.63796076393679,76.61920705586417,,,,,,
+test_0,rf,pred_0_full,target,1.7485332076646074,1.4043175307718925,,,,,,
+test_0,rf,pred_0_full_val,target,1.7485332076646074,1.4043175307718925,,,,,,
+test_0,rf,pred_1_full,target,1.7394634167575023,1.401712108747394,,,,,,
+test_0,rf,pred_1_full_val,target,1.7394634167575023,1.401712108747394,,,,,,
+test_0,rf,pred_2_full,target,1.891011638613675,1.6176743192378367,,,,,,
+test_0,rf,pred_2_full_val,target,1.891011638613675,1.6176743192378367,,,,,,
+test_0,rf,pred_3_full,target,1.7515934686962622,1.3893978262725097,,,,,,
+test_0,rf,pred_3_full_val,target,1.7515934686962622,1.3893978262725097,,,,,,
+test_0,rf,pred_ensemble_full,target,1.7384964723355167,1.384255570089141,,,,,,
+test_0,rf,pred_ensemble_full_val,target,1.738580840357144,1.383728649652366,,,,,,
