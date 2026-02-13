@@ -28,6 +28,27 @@ def generate_synth_data(
         snr : float = 1,
         prior_lc_info : pd.DataFrame | None = None
     ) -> tuple[pd.DataFrame, pd.DataFrame, typing.Union[ro.FloatVector, NULLType]]:
+    """Generate synthetic data based on real data
+
+    Args:
+        data: a DataFrame containing the real data to generate synthetic data from
+        num_features: the number of features the resulting synthetic DataFrame should have
+        num_samples: the number of samples the resulting synthetic DataFrame should have
+        response_fn: the function used to generate the response column. This can be created
+            using `response_function` function
+        response_parameters: (optional) if set to None, a continuous response will be
+            generated. Otherwise, this should be a dict with an "ncats" key specifying
+            the number of categories, and a "quantile" key which should be "quantile",
+            "random", or a list of cut points. Default is None (continuous response)
+        snr: (optional) the desired signal to noise ratio. Lower values inject more
+            random noise into the synthetic data. Default is 1 (equal parts signal and noise)
+        prior_lc_info: (optional) linear combination info returned from a previous call to
+            this function to ensure target and source synthetic datasets are paired.
+            Default is None (no prior linear combination info)
+    
+    Returns:
+        A tuple containing the generated synthetic data, the linear combination info for the generated synthetic data, and a list of cut points if a categorical response was used (else NULL)
+    """
     
     ro.r["Sys.setenv"](OMICSTL_PKG_ROOT = _PKG_ROOT()) # type: ignore
     ro.r["source"](os.path.join(_PKG_ROOT(), "r", "requirements.R")) # type: ignore
@@ -61,7 +82,7 @@ def generate_synth_data(
         snr=snr,
         # Including this is crucial. Otherwise, target and source datasets are
         # not paired!
-        prior_lc_info=pd2df(prior_lc_info)
+        prior_lc_info=pd2df(prior_lc_info),
         )
 
     return pd.DataFrame(df2pd(result_data.rx2("data"))), df2pd(result_data.rx2("lc_info")), result_data.rx2("cut_point")

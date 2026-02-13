@@ -34,12 +34,34 @@ def add_last_layer(out: torch.Tensor, prediction_mode: PredictionMode) -> torch.
 
 
 def compute_mse(predictions: torch.Tensor, targets: torch.Tensor) -> float:
-    """Compute MSE of torch model."""
+    """Compute MSE of torch model.
+    
+    Args:
+        predictions: a tensor containing regression prediction values
+        targets: a tensor containing expected predicted values
+        
+    Returns:
+        the mean squared error between the predictions and the targets
+    """
+    if torch.isnan(predictions).any() or torch.isinf(predictions).any():
+        raise ValueError("predictions contains NaN or infinity, which is not allowed")
+
     return ((predictions.detach().cpu().numpy() - targets.detach().cpu().numpy()) ** 2).mean()
 
 
 def compute_accuracy(predictions: torch.Tensor, targets: torch.Tensor) -> float:
-    """Compute accuracy of torch model."""
+    """Compute accuracy of torch model.
+    
+    Args:
+        predictions: a two-dimensional tensor containing class prediction probabilities, e.g. torch.tensor([[0.1, 0.7, 0.2], ...])
+        targets: a one-dimensional tensor containing the target predicted class, e.g. torch.tensor([1, ...])
+
+    Returns:
+        the accuracy metric of the predictions when compared to the targets
+    """
+    if torch.isnan(predictions).any() or torch.isinf(predictions).any():
+        raise ValueError("predictions contains NaN or infinity, which is not allowed")
+
     return (predictions.argmax(dim=1).numpy() == targets.numpy()).mean()
 
 

@@ -134,8 +134,9 @@ def calculate_metrics(
     metrics["rmse"] = np.nan
     metrics["mae"] = np.nan
     metrics["acc"] = np.nan
-    metrics["f1"] = np.nan
+    metrics["roc_auc"] = np.nan
     metrics["mcc"] = np.nan
+    metrics["f1"] = np.nan
     metrics["precision"] = np.nan
     metrics["recall"] = np.nan
         

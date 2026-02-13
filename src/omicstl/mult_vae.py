@@ -277,8 +277,8 @@ class JointVAE(nn.Module):
                 #mse = mse.sum()
                 return torch.mean(mse + var_beta * kl)
 
+    @staticmethod
     def product_of_experts(
-        self,
         dists: list[Normal],
         eps: float = 1e-8,
     ) -> torch.distributions.Normal:

@@ -1,0 +1,3 @@
+split,model,model_type,model_id,rmse,mae,acc,f1,mcc,precision,recall,roc_auc,dropout,hidden_dim_base,n_latent_dims,source_epochs,target_epochs,freeze,z_dim_base,lr,weight_decay,gamma
+test_0,mult_vae,mult_vae,target,3.6556408635380113,3.3283363069382417,,,,,,,0.3,12.0,2.0,5.0,5.0,none,12.0,0.0001,0.0001,2.0
+test_0,mult_vae,mult_vae,target_nosource,2.313678346003418,1.9238123511122143,,,,,,,0.3,12.0,2.0,5.0,5.0,none,12.0,0.0001,0.0001,2.0
