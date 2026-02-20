@@ -247,7 +247,7 @@ predict_m2 <- function(
     for (i in seq_len(num_samples)) {
       row <- unname(sapply(seq_len(num_classes), \(x) pred_2_unnorm[[x]][i]))
       if (min(row) < 0) {
-        row <- row + min(row)
+        row <- row - min(row)
       }
       norm_class_probs <- row/sum(row)
       pred_2 <- c(pred_2, norm_class_probs)
