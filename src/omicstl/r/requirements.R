@@ -33,7 +33,7 @@ suppressMessages({
       for (pkg in required_packages) {
         if (!require(pkg, character.only = TRUE)) {
           if (pkg == "viRandomForests") {
-            path <- file.path(pkgroot, "src", "omicstl", "r", "viRF_code", "viRandomForests_1.0.tar.gz")
+            path <- file.path(pkgroot, "r", "viRF_code", "viRandomForests_1.0.tar.gz")
             install.packages(path,
                             repos = NULL,
                             type = "source",

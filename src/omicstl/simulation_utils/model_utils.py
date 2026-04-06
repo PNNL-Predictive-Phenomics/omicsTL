@@ -373,6 +373,12 @@ def train_model(
         gamma=config.hyperparams.get("gamma"),
     )
 
+def predict_dl_model(
+    pretrained_model: TransferMLP | TransferVAE,
+    features: pd.DataFrame,
+    model_id: str = "target"
+):
+    return pretrained_model.__getattribute__(model_id).predict([features])
 
 def create_cv_folds(
     feature_matrix: pd.DataFrame,
@@ -1320,3 +1326,9 @@ def update_rf_model(
 
     logger.info(f"Model fitting completed. Results shape: {results.shape}")
     return results, transfer_model
+
+def predict_rf_model(
+    pretrained_model : TransferForest,
+    input_data : pd.DataFrame 
+):
+    return pretrained_model.generate_predictions([input_data])[0]

@@ -200,9 +200,9 @@ class TransferForest:
     def generate_predictions(
         self,
         views: list[pd.DataFrame],
-        response: pd.DataFrame,
-        validation_views: list[pd.DataFrame],  # = None
-        validation_response: pd.DataFrame,  # = None
+        response: pd.DataFrame | None = None,
+        validation_views: list[pd.DataFrame] | None = None,
+        validation_response: pd.DataFrame | None = None,
         ensemble_views: list[pd.DataFrame] | None = None,
         ensemble_response: pd.DataFrame | None = None,
         integration_type: IntegrationType = IntegrationType.NONE,
@@ -236,10 +236,10 @@ class TransferForest:
         for index, view in enumerate(views):
             view_transfer_models = self.transfer_models[index]
             res = robjects.r["predict_trans_rf"](
-                trans_rf_res=view_transfer_models,
-                newdata=pd2df(view),
-                x_val=pd2df(validation_views[index]),
-                y_val=self._resolve_response(validation_response),
+                trans_rf_res = view_transfer_models,
+                newdata = pd2df(view),
+                x_val = robjects.NULL if validation_views is None else pd2df(validation_views[index]),
+                y_val = robjects.NULL if validation_response is None else self._resolve_response(validation_response),
                 x_ensemble = robjects.NULL if ensemble_views is None else pd2df(ensemble_views[index]),
                 y_ensemble = robjects.NULL if ensemble_response is None else self._resolve_response(ensemble_response)
             ) # type: ignore
@@ -247,6 +247,12 @@ class TransferForest:
 
             if integration_type != self.IntegrationType.WEIGHTED:
                 continue
+
+            if validation_views is None:
+                raise ValueError("validation_views must not be None with WEIGHTED integration")
+            
+            if validation_response is None:
+                raise ValueError("validation_response must not be None with WEIGHTED integration")
 
             res = robjects.r["predict_trans_rf"](
                 trans_rf_res=view_transfer_models,
@@ -266,6 +272,10 @@ class TransferForest:
                     logger.info("Bayesian Integration unsupported for regression models.")
                     # TODO: spit error here instead of returning
                     return [{}]
+                
+                if response is None:
+                    raise ValueError("response must not be None with BAYESIAN integration")
+
                 return self._bayesian_integration(prediction_dicts=prediction_dicts, response=response)
             case self.IntegrationType.WEIGHTED:
                 # TODO: add checks for validation data if we make that optional

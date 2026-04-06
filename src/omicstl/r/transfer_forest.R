@@ -237,7 +237,7 @@ predict_m2 <- function(
     pred_2_unnorm <- list()
     for (i in seq_len(num_classes)) {
       pred_2_deltas <- predict(models[['m2']][[i]], newdata = newdata, pred_type = pred_type)
-      
+
       # Add deltas to original prediction probabilities
       pred_2_unnorm[[i]] <- pred_source[,i] + pred_2_deltas
     }
@@ -381,179 +381,260 @@ predict_ens <- function(
                       prev_preds[[3]] * ensemble_importance[3] + 
                       prev_preds[[4]] * ensemble_importance[4]
 
-    return(pred_ensemble)
+    return(list(pred=pred_ensemble, importance=ensemble_importance))
   }
+}
+
+randomize_equal_response = function(responses) {
+  max_resp_val <- max(responses)
+  max_inds <- which(responses == max_resp_val)
+  return(sample(max_inds, 1))
 }
 
 #' Predict data
 #'
 #' @param trans_rf_res the random forest trained using transfer learning
 #' @param newdata new data
-#' @param y_val target validation response data
-#' @param x_val target validation source data
+#' @param y_val (optional) target validation response data
+#' @param x_val (optional) target validation source data
 #' @param y_ensemble (optional) target ensemble response data, required if x_ensemble is present
 #' @param x_ensemble (optional) target ensemble source data, required if y_ensemble is present
 predict_trans_rf = function(
     trans_rf_res,
     newdata,
-    y_val,
-    x_val,
+    y_val = NULL,
+    x_val = NULL,
     y_ensemble = NULL,
     x_ensemble = NULL
 ){
   if (trans_rf_res[["m_source"]]$type == "classification") {
-    pred_type = "prob"
+    pred_type <- "prob"
     classes <- levels(predict(trans_rf_res[["m0"]], type = 'response'))
   } else {
-    pred_type = "response"
+    pred_type <- "response"
   }
 
   #print("pred_source")
   pred_source <- predict_source(trans_rf_res, newdata, pred_type)
-  pred_source_val = predict_source(trans_rf_res, x_val, pred_type)
+  if (!is.null(x_val)) {
+    pred_source_val <- predict_source(trans_rf_res, x_val, pred_type)
+  } else {
+    pred_source_val <- NULL
+  }
 
   #print("pred_0")
-  pred_0 = predict_m0(trans_rf_res, newdata, pred_type)
-  pred_0_val = predict_m0(trans_rf_res, x_val, pred_type)
+  pred_0 <- predict_m0(trans_rf_res, newdata, pred_type)
+  if (!is.null(x_val)) {
+    pred_0_val <- predict_m0(trans_rf_res, x_val, pred_type)
+  } else {
+    pred_0_val <- NULL
+  }
 
   #print("pred_1")
   pred_1 = predict_m1(trans_rf_res, newdata, pred_type)
-  pred_1_val = predict_m1(trans_rf_res, x_val, pred_type)
+  if (!is.null(x_val)) {
+    pred_1_val <- predict_m1(trans_rf_res, x_val, pred_type)
+  } else {
+    pred_1_val <- NULL
+  }
 
   #print("pred_2")
   pred_2 <- predict_m2(trans_rf_res, newdata, pred_source, pred_type)
-  pred_2_val <- predict_m2(trans_rf_res, x_val, pred_source_val, pred_type)
+  if (!is.null(x_val)) {
+    pred_2_val <- predict_m2(trans_rf_res, x_val, pred_source_val, pred_type)
+  } else {
+    pred_2_val <- NULL
+  }
   # Need to specify colnames here since predict_m2() does not
   # automatically assign them.
   colnames(pred_2) <- colnames(pred_1)
-  colnames(pred_2_val) <- colnames(pred_1_val)
+  
+  if (!is.null(x_val)) {
+    colnames(pred_2_val) <- colnames(pred_1_val)
+  }
 
   #print("pred_3")
-  pred_3 = predict_m3(trans_rf_res, newdata, pred_type)
-  pred_3_val = predict_m3(trans_rf_res, x_val, pred_type)
+  pred_3 <- predict_m3(trans_rf_res, newdata, pred_type)
+  if (!is.null(x_val)) {
+    pred_3_val <- predict_m3(trans_rf_res, x_val, pred_type)
+  } else {
+    pred_3_val <- NULL
+  }
 
   #print("pred_ens")
   pred_ensemble <- NULL
+  ensemble_importance <- NULL
   if (pred_type == "prob") {
     # for categorical response
     if (!is.null(x_ensemble) && !is.null(y_ensemble)) {
       pred_ensemble <- predict_ens(trans_rf_res, y_ensemble, x_ensemble, list(pred_0, pred_1, pred_2, pred_3), newdata, pred_type)
-      pred_ensemble_val <- predict_ens(trans_rf_res, y_ensemble, x_ensemble, list(pred_0_val, pred_1_val, pred_2_val, pred_3_val), x_val, pred_type)
+      
+      if (!is.null(x_val)) {
+        pred_ensemble_val <- predict_ens(trans_rf_res, y_ensemble, x_ensemble, list(pred_0_val, pred_1_val, pred_2_val, pred_3_val), x_val, pred_type)
+      } else {
+        pred_ensemble_val <- NULL
+      }
       # Need to specify colnames here since predict_ens() does not
       # automatically assign them.
       colnames(pred_ensemble) <- colnames(pred_1)
-      colnames(pred_ensemble_val) <- colnames(pred_1_val)
-
+      if (!is.null(x_val)) {
+        colnames(pred_ensemble_val) <- colnames(pred_1_val)
+      }
     } else {
     # If ensemble samples aren't provided, use equal weighting
       pred_ensemble <- Reduce("*", list(pred_0, pred_1, pred_2, pred_3))
       pred_ensemble <- apply(pred_ensemble, 1, function(x){x/sum(x)})
       pred_ensemble <- t(pred_ensemble)
 
-      pred_ensemble_val <- Reduce("*", list(pred_0_val, pred_1_val, pred_2_val, pred_3_val))
-      pred_ensemble_val <- apply(pred_ensemble_val, 1, function(x){x/sum(x)})
-      pred_ensemble_val <- t(pred_ensemble_val)
+      if (!is.null(x_val)) {
+        pred_ensemble_val <- Reduce("*", list(pred_0_val, pred_1_val, pred_2_val, pred_3_val))
+        pred_ensemble_val <- apply(pred_ensemble_val, 1, function(x){x/sum(x)})
+        pred_ensemble_val <- t(pred_ensemble_val)
+      } else {
+        pred_ensemble_val <- NULL
+      }
     }
   # For continuous response
   } else {
 
     if (!is.null(x_ensemble) && !is.null(y_ensemble)) {
       pred_ensemble <- predict_ens(trans_rf_res, y_ensemble, x_ensemble, list(pred_0, pred_1, pred_2, pred_3), newdata, pred_type)
-      pred_ensemble_val <- predict_ens(trans_rf_res, y_ensemble, x_ensemble, list(pred_0_val, pred_1_val, pred_2_val, pred_3_val), x_val, pred_type)
+      ensemble_importance <- pred_ensemble$importance
+      pred_ensemble <- pred_ensemble$pred
+
+      if (!is.null(x_val)) {
+        pred_ensemble_val <- predict_ens(trans_rf_res, y_ensemble, x_ensemble, list(pred_0_val, pred_1_val, pred_2_val, pred_3_val), x_val, pred_type)$pred
+      } else {
+        pred_ensemble_val <- NULL
+      }
     } else {
       # If ensemble samples aren't provided, use equal weighting
       pred_ensemble <- (pred_0 + pred_1 + pred_2 + pred_3) / 4
 
-      pred_ensemble_val <- (pred_0_val + pred_1_val + pred_2_val + pred_3_val) / 4
+      if (!is.null(x_val)) {
+        pred_ensemble_val <- (pred_0_val + pred_1_val + pred_2_val + pred_3_val) / 4
+      } else {
+        pred_ensemble_val <- NULL
+      }
     }
 
   }
   
   out <- NULL
   if(pred_type == "prob") {
-    pred_source_pred_class <- colnames(pred_source)[apply(pred_source, 1, \(x) which.max(x))]
+    pred_source_pred_class <- colnames(pred_source)[apply(pred_source, 1, randomize_equal_response)]
     pred_source_max_prob <- pred_source
     colnames(pred_source_max_prob) <- paste0("pred_source_prob_", colnames(pred_source_max_prob))
-    pred_0_pred_class <- colnames(pred_0)[apply(pred_0, 1, \(x) which.max(x))]
+    pred_0_pred_class <- colnames(pred_0)[apply(pred_0, 1, randomize_equal_response)]
     pred_0_max_prob <- pred_0
     colnames(pred_0_max_prob) <- paste0("pred_0_prob_", colnames(pred_0_max_prob))
-    pred_1_pred_class <- colnames(pred_1)[apply(pred_1, 1, \(x) which.max(x))]
+    pred_1_pred_class <- colnames(pred_1)[apply(pred_1, 1, randomize_equal_response)]
     pred_1_max_prob <- pred_1
     colnames(pred_1_max_prob) <- paste0("pred_1_prob_", colnames(pred_1_max_prob))
-    pred_2_pred_class <- colnames(pred_2)[apply(pred_2, 1, \(x) which.max(x))]
+    pred_2_pred_class <- colnames(pred_2)[apply(pred_2, 1, randomize_equal_response)]
     pred_2_max_prob <- pred_2
     colnames(pred_2_max_prob) <- paste0("pred_2_prob_", colnames(pred_2_max_prob))
-    pred_3_pred_class <- colnames(pred_3)[apply(pred_3, 1, \(x) which.max(x))]
+    pred_3_pred_class <- colnames(pred_3)[apply(pred_3, 1, randomize_equal_response)]
     pred_3_max_prob <- pred_3
     colnames(pred_3_max_prob) <- paste0("pred_3_prob_", colnames(pred_3_max_prob))
-    pred_ensemble_pred_class <- colnames(pred_ensemble)[unlist(apply(pred_ensemble, 1, \(x) which.max(x)))]
+    pred_ensemble_pred_class <- colnames(pred_ensemble)[unlist(apply(pred_ensemble, 1, randomize_equal_response))]
     pred_ensemble_max_prob <- pred_ensemble
     colnames(pred_ensemble_max_prob) <- paste0("pred_ensemble_prob_", colnames(pred_ensemble_max_prob))
     
-    pred_source_val_pred_class <- colnames(pred_source_val)[apply(pred_source_val, 1, \(x) which.max(x))]
-    pred_source_val_max_prob <- pred_source_val
-    colnames(pred_source_val_max_prob) <- paste0("pred_source_val_prob_", colnames(pred_source_val_max_prob))
-    pred_0_val_pred_class <- colnames(pred_0_val)[apply(pred_0_val, 1, \(x) which.max(x))]
-    pred_0_val_max_prob <- pred_0_val
-    colnames(pred_0_val_max_prob) <- paste0("pred_0_val_prob_", colnames(pred_0_val_max_prob))
-    pred_1_val_pred_class <- colnames(pred_1_val)[apply(pred_1_val, 1, \(x) which.max(x))]
-    pred_1_val_max_prob <- pred_1_val
-    colnames(pred_1_val_max_prob) <- paste0("pred_1_val_prob_", colnames(pred_1_val_max_prob))
-    pred_2_val_pred_class <- colnames(pred_2_val)[apply(pred_2_val, 1, \(x) which.max(x))]
-    pred_2_val_max_prob <- pred_2_val
-    colnames(pred_2_val_max_prob) <- paste0("pred_2_val_prob_", colnames(pred_2_val_max_prob))
-    pred_3_val_pred_class <- colnames(pred_3_val)[apply(pred_3_val, 1, \(x) which.max(x))]
-    pred_3_val_max_prob <- pred_3_val
-    colnames(pred_3_val_max_prob) <- paste0("pred_3_val_prob_", colnames(pred_3_val_max_prob))
-    pred_ensemble_val_pred_class <- colnames(pred_ensemble_val)[unlist(apply(pred_ensemble_val, 1, \(x) which.max(x)))]
-    pred_ensemble_val_max_prob <- pred_ensemble_val
-    colnames(pred_ensemble_val_max_prob) <- paste0("pred_ensemble_val_prob_", colnames(pred_ensemble_val_max_prob))
+    if (!is.null(x_val)) {
+      pred_source_val_pred_class <- colnames(pred_source_val)[apply(pred_source_val, 1, randomize_equal_response)]
+      pred_source_val_max_prob <- pred_source_val
+      colnames(pred_source_val_max_prob) <- paste0("pred_source_val_prob_", colnames(pred_source_val_max_prob))
+      pred_0_val_pred_class <- colnames(pred_0_val)[apply(pred_0_val, 1, randomize_equal_response)]
+      pred_0_val_max_prob <- pred_0_val
+      colnames(pred_0_val_max_prob) <- paste0("pred_0_val_prob_", colnames(pred_0_val_max_prob))
+      pred_1_val_pred_class <- colnames(pred_1_val)[apply(pred_1_val, 1, randomize_equal_response)]
+      pred_1_val_max_prob <- pred_1_val
+      colnames(pred_1_val_max_prob) <- paste0("pred_1_val_prob_", colnames(pred_1_val_max_prob))
+      pred_2_val_pred_class <- colnames(pred_2_val)[apply(pred_2_val, 1, randomize_equal_response)]
+      pred_2_val_max_prob <- pred_2_val
+      colnames(pred_2_val_max_prob) <- paste0("pred_2_val_prob_", colnames(pred_2_val_max_prob))
+      pred_3_val_pred_class <- colnames(pred_3_val)[apply(pred_3_val, 1, randomize_equal_response)]
+      pred_3_val_max_prob <- pred_3_val
+      colnames(pred_3_val_max_prob) <- paste0("pred_3_val_prob_", colnames(pred_3_val_max_prob))
+      pred_ensemble_val_pred_class <- colnames(pred_ensemble_val)[unlist(apply(pred_ensemble_val, 1, randomize_equal_response))]
+      pred_ensemble_val_max_prob <- pred_ensemble_val
+      colnames(pred_ensemble_val_max_prob) <- paste0("pred_ensemble_val_prob_", colnames(pred_ensemble_val_max_prob))
+
+      out <- data.frame(
+        truth = y_val,
+        pred_source = pred_source_pred_class,
+        pred_source_max_prob,
+        pred_0 = pred_0_pred_class,
+        pred_0_max_prob,
+        pred_1 = pred_1_pred_class,
+        pred_1_max_prob,
+        pred_2 = pred_2_pred_class,
+        pred_2_max_prob,
+        pred_3 = pred_3_pred_class,
+        pred_3_max_prob,
+        pred_ensemble = pred_ensemble_pred_class,
+        pred_ensemble_max_prob,
+        pred_source_val = pred_source_val_pred_class,
+        pred_source_val_max_prob,
+        pred_0_val = pred_0_val_pred_class,
+        pred_0_val_max_prob,
+        pred_1_val = pred_1_val_pred_class,
+        pred_1_val_max_prob,
+        pred_2_val = pred_2_val_pred_class,
+        pred_2_val_max_prob,
+        pred_3_val = pred_3_val_pred_class,
+        pred_3_val_max_prob,
+        pred_ensemble_val = pred_ensemble_val_pred_class,
+        pred_ensemble_val_max_prob
+      )
+    } else {
+      out <- data.frame(
+        pred_source = pred_source_pred_class,
+        pred_source_max_prob,
+        pred_0 = pred_0_pred_class,
+        pred_0_max_prob,
+        pred_1 = pred_1_pred_class,
+        pred_1_max_prob,
+        pred_2 = pred_2_pred_class,
+        pred_2_max_prob,
+        pred_3 = pred_3_pred_class,
+        pred_3_max_prob,
+        pred_ensemble = pred_ensemble_pred_class,
+        pred_ensemble_max_prob
+      )
+    }
     
     #pred_ensemble_max_prob[pred_ensemble_max_prob == 1.0] <- 0.9999
-
-    out <- data.frame(
-      truth = y_val,
-      pred_source = pred_source_pred_class,
-      pred_source_max_prob,
-      pred_0 = pred_0_pred_class,
-      pred_0_max_prob,
-      pred_1 = pred_1_pred_class,
-      pred_1_max_prob,
-      pred_2 = pred_2_pred_class,
-      pred_2_max_prob,
-      pred_3 = pred_3_pred_class,
-      pred_3_max_prob,
-      pred_ensemble = pred_ensemble_pred_class,
-      pred_ensemble_max_prob,
-      pred_source_val = pred_source_pred_class,
-      pred_source_val_max_prob,
-      pred_0_val = pred_0_val_pred_class,
-      pred_0_val_max_prob,
-      pred_1_val = pred_1_val_pred_class,
-      pred_1_val_max_prob,
-      pred_2_val = pred_2_val_pred_class,
-      pred_2_val_max_prob,
-      pred_3_val = pred_3_val_pred_class,
-      pred_3_val_max_prob,
-      pred_ensemble_val = pred_ensemble_val_pred_class,
-      pred_ensemble_val_max_prob
-    )
   } else {
-    out <- data.frame(
-      pred_source = pred_source,
-      pred_0 = pred_0,
-      pred_1 = pred_1,
-      pred_2 = pred_2,
-      pred_3 = pred_3,
-      pred_ensemble = pred_ensemble,
-      pred_source_val = pred_source_val,
-      pred_0_val = pred_0_val,
-      pred_1_val = pred_1_val,
-      pred_2_val = pred_2_val,
-      pred_3_val = pred_3_val,
-      pred_ensemble_val = pred_ensemble_val
-    )
+    if (!is.null(x_val)) {
+      out <- data.frame(
+        pred_source = pred_source,
+        pred_0 = pred_0,
+        pred_1 = pred_1,
+        pred_2 = pred_2,
+        pred_3 = pred_3,
+        pred_ensemble = pred_ensemble,
+        pred_source_val = pred_source_val,
+        pred_0_val = pred_0_val,
+        pred_1_val = pred_1_val,
+        pred_2_val = pred_2_val,
+        pred_3_val = pred_3_val,
+        pred_ensemble_val = pred_ensemble_val
+      )
+    } else {
+      out <- data.frame(
+        pred_source = pred_source,
+        pred_0 = pred_0,
+        pred_1 = pred_1,
+        pred_2 = pred_2,
+        pred_3 = pred_3,
+        pred_ensemble = pred_ensemble
+      )
+    }
   }
+
+  attr(out, "ensemble_importance") <- ensemble_importance
 
   # print(out)
   return(out)
