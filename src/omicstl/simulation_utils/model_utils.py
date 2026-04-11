@@ -1204,8 +1204,7 @@ def fit_rf_model(
                 
                 if is_classification:
                     model_type_base = model_type.replace("_full", "")
-                    predicted_classes = prediction[model_type_base].to_numpy()
-                    predicted_classes = [int(x) for x in predicted_classes]
+                    predicted_classes = prediction[model_type_base].to_numpy().astype(int)
 
                     predicted_probs = prediction.drop(columns = model_type_base)
                     if predicted_probs.shape[1] == 2:
