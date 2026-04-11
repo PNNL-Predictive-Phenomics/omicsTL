@@ -278,8 +278,8 @@ class JointMLP(nn.Module):
 
         Args:
                 y: Ground truth labels
-                yhat: softmax predictions for the combinations of experts
-                yhats: List of softmax predictions for each marginal model
+                yhat: logit predictions for the combinations of experts
+                yhats: List of logit predictions for each marginal model
                 focal: Whether to use focal loss. Defaults to True.
                 gamma: The focal loss gamma parameter. Defaults to 2.
                 alpha: A tensor with number of elements equal to the number of classes, specifying class weights. Defaults to None.
@@ -311,9 +311,10 @@ class JointMLP(nn.Module):
                     marginal_losses = [m * alpha.view(-1) for m in marginal_losses]
 
                 if focal:
-                    product_loss = torch.pow(1 - yhat.gather(1, y.view(-1, 1)), gamma).view(-1) * product_loss
+                    probs = tf.softmax(yhat, dim=1)
+                    product_loss = torch.pow(1 - probs.gather(1, y.view(-1, 1)), gamma).view(-1) * product_loss
                     marginal_losses = [
-                        torch.pow(1 - yh.gather(1, y.view(-1, 1)), gamma).view(-1) * m
+                        torch.pow(1 - tf.softmax(yh, dim=1).gather(1, y.view(-1, 1)), gamma).view(-1) * m
                         for yh, m in zip(yhats, marginal_losses, strict=False)
                     ]
 

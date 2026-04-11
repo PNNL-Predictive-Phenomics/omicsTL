@@ -27,7 +27,7 @@ def add_last_layer(out: torch.Tensor, prediction_mode: PredictionMode) -> torch.
     """
     match prediction_mode:
         case PredictionMode.CLASSIFICATION:
-            out = tf.softmax(out, dim=1)
+            pass  # return raw logits; loss fns apply log_softmax internally, prediction uses softmax explicitly
         case PredictionMode.REGRESSION:
             pass
     return out

@@ -75,6 +75,7 @@ class MarginalFC(nn.Module):
 
         h = self.fc_z(h)
         mu, logvar = torch.chunk(h, 2, dim=-1)
+        logvar = torch.clamp(logvar, -10, 10)
 
         dist = Normal(mu, torch.exp(logvar / 2))
 
@@ -176,9 +177,9 @@ class JointVAE(nn.Module):
 
         Args:
             y: Ground truth labels
-            yhat: softmax predictions for the product of experts
+            yhat: logit predictions for the product of experts
             poe_dist: The distribution of the product of experts
-            yhats: List of softmax predictions for each marginal model
+            yhats: List of logit predictions for each marginal model
             dists: List of distributions for each marginal model
             var_beta: The weight of the KL divergence term. Defaults to 1.
             focal: Whether to use focal loss. Defaults to True.
@@ -265,8 +266,8 @@ class JointVAE(nn.Module):
                     ce = ce * alpha.view(-1)
 
                 if focal:
-                    focal_loss = torch.pow(1 - yhat.gather(1, y.view(-1, 1)), gamma).view(-1) * ce
-                    focal_loss = focal_loss.sum()
+                    probs = tf.softmax(yhat, dim=1)
+                    focal_loss = torch.pow(1 - probs.gather(1, y.view(-1, 1)), gamma).view(-1) * ce
                     return torch.mean(focal_loss + var_beta * kl)
                 
                 #ce = ce.sum()
@@ -307,7 +308,7 @@ class JointVAE(nn.Module):
         var_poe = torch.div(1.0, var_poe + eps)
         mu_poe = torch.mul(mu_poe, var_poe)
 
-        return Normal(mu_poe, var_poe)
+        return Normal(mu_poe, torch.sqrt(var_poe))
 
     def freeze_marginal_layers(self) -> None:
         """Freeze marginal layers."""
