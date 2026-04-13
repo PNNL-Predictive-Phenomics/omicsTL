@@ -281,24 +281,20 @@ predict_m3 <- function(
   return(pred_3)
 }
 
-#' Predict data using an ensemble weighting method of m0 through m3
+#' Generate prediction weights for the ensemble weighting method of m0 through m3
 #'
 #' @param models list of models returned by train_trans_rf
 #' @param y_ensemble the ensemble response data used for training the ensemble model
 #' @param x_ensemble the ensemble feature data used for training the ensemble model
-#' @param prev_preds a list of predictions from m0 through m3
-#' @param newdata a dataframe containing the new data to predict on
 #' @param pred_type "prob" for categorical response or "response" for continuous response
 #'
 #' @details This method combines all of the previous methods, m0 through m3, by training
 #'   a RandomForest model on a separate ensemble training sample set, extracting the
 #'   feature weights, and taking the weighted geometric mean model prediction.
-predict_ens <- function(
+predict_ens_weights <- function(
   models,
   y_ensemble,
   x_ensemble,
-  prev_preds,
-  newdata,
   pred_type
 ) {
   classes <- models[['m_source']]$classes
@@ -319,18 +315,9 @@ predict_ens <- function(
       x = pred_combine_ensemble
     )
 
-    # Get the previous predictions in a prob format
-    pred_0 <- matrix(prev_preds[[1]], ncol = num_classes)
-    pred_1 <- matrix(prev_preds[[2]], ncol = num_classes)
-    pred_2 <- matrix(prev_preds[[3]], ncol = num_classes)
-    pred_3 <- matrix(prev_preds[[4]], ncol = num_classes)
-
-    pred_combine <- cbind(pred_0, pred_1, pred_2, pred_3)
-
     # Extract the importance values
     ensemble_importance <- importance(m_ensemble)[,1]
     num_classes <- length(ensemble_importance) / 4
-    num_samples <- dim(pred_combine)[1]
     class_model_weights <- data.frame(
       matrix(
         sapply(
@@ -346,22 +333,7 @@ predict_ens <- function(
     )
     colnames(class_model_weights) <- c("m0", "m1", "m2", "m3")
 
-    class_scores_all <- c()
-    for (sample in seq_len(num_samples)) {
-      class_scores <- rep(1, num_classes)
-      for (class in seq_len(num_classes)) {
-        for (model in 1:4) {
-          #  print(paste("Class", class, "of model", model, "is", pred_combine[sample, (model - 1) * num_classes + class], "*", class_model_weights[class, model]))
-          class_scores[class] <- class_scores[class] * pred_combine[sample, (model - 1) * num_classes + class] ^ class_model_weights[class, model]
-        }
-      }
-      class_scores <- class_scores / sum(class_scores)
-      class_scores_all <- c(class_scores_all, class_scores)
-    }
-
-    pred_ensemble <- matrix(class_scores_all, ncol=num_classes, byrow=TRUE)
-
-    return(pred_ensemble)
+    return(class_model_weights)
   } else {
     m_ensemble <- randomForest::randomForest(
       y = y_ensemble,
@@ -376,12 +348,60 @@ predict_ens <- function(
     ensemble_importance <- importance(m_ensemble)[,1]
     ensemble_importance <- ensemble_importance / sum(ensemble_importance)
 
-    pred_ensemble <- prev_preds[[1]] * ensemble_importance[1] +
-                      prev_preds[[2]] * ensemble_importance[2] + 
-                      prev_preds[[3]] * ensemble_importance[3] + 
-                      prev_preds[[4]] * ensemble_importance[4]
+    return(ensemble_importance)
+  }
+}
 
-    return(list(pred=pred_ensemble, importance=ensemble_importance))
+#' Predict data using an ensemble weighting method of m0 through m3
+#'
+#' @param prev_preds a list of predictions from m0 through m3
+#' @param ensemble_weights a list (for continuous response) or data.frame (for categorical
+#'   response) of weights to use for ensemble prediction. These should be generated with
+#'   \code{predict_ens_weights}
+#' @param pred_type "prob" for categorical response or "response" for continuous response
+#' @param num_classes the number of classes to predict (categorial only)
+#'
+#' @details see \code{predict_ens_weights} for details about the ensemble method
+predict_ens <- function(
+  prev_preds,
+  ensemble_weights,
+  pred_type,
+  num_classes = NULL
+) {
+  if (pred_type == "prob") {
+    # Get the previous predictions in a prob format
+    pred_0 <- matrix(prev_preds[[1]], ncol = num_classes)
+    pred_1 <- matrix(prev_preds[[2]], ncol = num_classes)
+    pred_2 <- matrix(prev_preds[[3]], ncol = num_classes)
+    pred_3 <- matrix(prev_preds[[4]], ncol = num_classes)
+
+    pred_combine <- cbind(pred_0, pred_1, pred_2, pred_3)
+
+    num_samples <- dim(pred_combine)[1]
+
+    class_scores_all <- c()
+    for (sample in seq_len(num_samples)) {
+      class_scores <- rep(1, num_classes)
+      for (class in seq_len(num_classes)) {
+        for (model in 1:4) {
+          #  print(paste("Class", class, "of model", model, "is", pred_combine[sample, (model - 1) * num_classes + class], "*", ensemble_weights[class, model]))
+          class_scores[class] <- class_scores[class] * pred_combine[sample, (model - 1) * num_classes + class] ^ ensemble_weights[class, model]
+        }
+      }
+      class_scores <- class_scores / sum(class_scores)
+      class_scores_all <- c(class_scores_all, class_scores)
+    }
+
+    pred_ensemble <- matrix(class_scores_all, ncol=num_classes, byrow=TRUE)
+
+    return(pred_ensemble)
+  } else {
+    pred_ensemble <- prev_preds[[1]] * ensemble_weights[1] +
+                        prev_preds[[2]] * ensemble_weights[2] + 
+                        prev_preds[[3]] * ensemble_weights[3] + 
+                        prev_preds[[4]] * ensemble_weights[4]
+
+    return(pred_ensemble)
   }
 }
 
@@ -399,14 +419,30 @@ randomize_equal_response = function(responses) {
 #' @param x_val (optional) target validation source data
 #' @param y_ensemble (optional) target ensemble response data, required if x_ensemble is present
 #' @param x_ensemble (optional) target ensemble source data, required if y_ensemble is present
+#' @param ensemble_weights (optional) ensemble weights from previous prediction. Do not use
+#'   simultaneously with x_ensemble and y_ensemble.
 predict_trans_rf = function(
     trans_rf_res,
     newdata,
     y_val = NULL,
     x_val = NULL,
     y_ensemble = NULL,
-    x_ensemble = NULL
+    x_ensemble = NULL,
+    ensemble_weights = NULL
 ){
+  if ((!is.null(x_ensemble) && is.null(y_ensemble)) ||
+      (!is.null(y_ensemble) && is.null(x_ensemble))) {
+    stop("y_ensemble and x_ensemble must both be provided if one is provided.")
+  }
+
+  if (!is.null(ensemble_weights) && (!is.null(x_ensemble) || !is.null(y_ensemble))) {
+    ensemble_weights <- NULL
+    warning(paste0(
+      "y_ensemble/x_ensemble, and ensemble_weights were both provided. Ensemble weights will be ",
+      "calculated using y_ensemble/x_ensemble and ensemble_weights will be ignored."
+    ))
+  }
+
   if (trans_rf_res[["m_source"]]$type == "classification") {
     pred_type <- "prob"
     classes <- levels(predict(trans_rf_res[["m0"]], type = 'response'))
@@ -445,6 +481,7 @@ predict_trans_rf = function(
   } else {
     pred_2_val <- NULL
   }
+
   # Need to specify colnames here since predict_m2() does not
   # automatically assign them.
   colnames(pred_2) <- colnames(pred_1)
@@ -463,17 +500,23 @@ predict_trans_rf = function(
 
   #print("pred_ens")
   pred_ensemble <- NULL
-  ensemble_importance <- NULL
+
+  # Generate weights if x_ensemble and y_ensemble are provided
+  if (!is.null(x_ensemble) && !is.null(y_ensemble)) {
+    ensemble_weights <- predict_ens_weights(trans_rf_res, y_ensemble, x_ensemble, pred_type)
+  }
+
   if (pred_type == "prob") {
     # for categorical response
-    if (!is.null(x_ensemble) && !is.null(y_ensemble)) {
-      pred_ensemble <- predict_ens(trans_rf_res, y_ensemble, x_ensemble, list(pred_0, pred_1, pred_2, pred_3), newdata, pred_type)
+    if (!is.null(ensemble_weights)) {
+      pred_ensemble <- predict_ens(list(pred_0, pred_1, pred_2, pred_3), ensemble_weights, pred_type, length(classes))
       
       if (!is.null(x_val)) {
-        pred_ensemble_val <- predict_ens(trans_rf_res, y_ensemble, x_ensemble, list(pred_0_val, pred_1_val, pred_2_val, pred_3_val), x_val, pred_type)
+        pred_ensemble_val <- predict_ens(list(pred_0_val, pred_1_val, pred_2_val, pred_3_val), ensemble_weights, pred_type, length(classes))
       } else {
         pred_ensemble_val <- NULL
       }
+
       # Need to specify colnames here since predict_ens() does not
       # automatically assign them.
       colnames(pred_ensemble) <- colnames(pred_1)
@@ -481,7 +524,7 @@ predict_trans_rf = function(
         colnames(pred_ensemble_val) <- colnames(pred_1_val)
       }
     } else {
-    # If ensemble samples aren't provided, use equal weighting
+      # If ensemble weights aren't provided, use equal weighting
       pred_ensemble <- Reduce("*", list(pred_0, pred_1, pred_2, pred_3))
       pred_ensemble <- apply(pred_ensemble, 1, function(x){x/sum(x)})
       pred_ensemble <- t(pred_ensemble)
@@ -493,17 +536,17 @@ predict_trans_rf = function(
       } else {
         pred_ensemble_val <- NULL
       }
-    }
-  # For continuous response
-  } else {
 
-    if (!is.null(x_ensemble) && !is.null(y_ensemble)) {
-      pred_ensemble <- predict_ens(trans_rf_res, y_ensemble, x_ensemble, list(pred_0, pred_1, pred_2, pred_3), newdata, pred_type)
-      ensemble_importance <- pred_ensemble$importance
-      pred_ensemble <- pred_ensemble$pred
+      ensemble_weights <- data.frame(matrix(rep(0.25, length(classes) * 4), ncol=4))
+      colnames(ensemble_weights) <- c("m0", "m1", "m2", "m3")
+    }
+  } else {
+    # For continuous response
+    if (!is.null(ensemble_weights)) {
+      pred_ensemble <- predict_ens(list(pred_0, pred_1, pred_2, pred_3), ensemble_weights, pred_type)
 
       if (!is.null(x_val)) {
-        pred_ensemble_val <- predict_ens(trans_rf_res, y_ensemble, x_ensemble, list(pred_0_val, pred_1_val, pred_2_val, pred_3_val), x_val, pred_type)$pred
+        pred_ensemble_val <- predict_ens(list(pred_0_val, pred_1_val, pred_2_val, pred_3_val), ensemble_weights, pred_type)
       } else {
         pred_ensemble_val <- NULL
       }
@@ -516,6 +559,8 @@ predict_trans_rf = function(
       } else {
         pred_ensemble_val <- NULL
       }
+
+      ensemble_weights <- rep(0.25, 4)
     }
 
   }
@@ -634,7 +679,7 @@ predict_trans_rf = function(
     }
   }
 
-  attr(out, "ensemble_importance") <- ensemble_importance
+  attr(out, "ensemble_weights") <- ensemble_weights
 
   # print(out)
   return(out)
