@@ -22,8 +22,7 @@ required_packages <- c(
 	"moments",
 	"dplyr",
 	"furrr",
-	"progressr",
-	"MASS"
+	"progressr"
 )
 options(repos = c(CRAN = "https://cloud.r-project.org/"))
 
