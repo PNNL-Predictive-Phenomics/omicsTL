@@ -376,9 +376,10 @@ def train_model(
 def predict_dl_model(
     pretrained_model: TransferMLP | TransferVAE,
     features: pd.DataFrame,
-    model_id: str = "target"
+    model_id: str = "target",
+    return_probabilities = False
 ):
-    return pretrained_model.__getattribute__(model_id).predict([features])
+    return pretrained_model.__getattribute__(model_id).predict([features], return_probabilities=return_probabilities)
 
 def create_cv_folds(
     feature_matrix: pd.DataFrame,
@@ -1057,6 +1058,41 @@ def fit_dl_model(
 
     return results, model, model_nosource
 
+def reorg_rf_predictions(test_predictions) -> dict:
+    # Grouping definition and new keys
+    groupings = {
+        'truth': ['truth'],
+        'pred_source_full': [r'^pred_source(?!.*val).*'],
+        'pred_source_full_val': [r'^pred_source.*val.*'],
+        'pred_0_full': [r'^pred_0(?!.*val).*'],
+        'pred_0_full_val': [r'^pred_0.*val.*'],
+        'pred_1_full': [r'^pred_1(?!.*val).*'],
+        'pred_1_full_val': [r'^pred_1.*val.*'],
+        'pred_2_full': [r'^pred_2(?!.*val).*'],
+        'pred_2_full_val': [r'^pred_2.*val.*'],
+        'pred_3_full': [r'^pred_3(?!.*val).*'],
+        'pred_3_full_val': [r'^pred_3.*val.*'],
+        'pred_ensemble_full': [r'^pred_ensemble(?!.*val).*'],
+        'pred_ensemble_full_val': [r'^pred_ensemble.*val.*']
+    }
+
+    # Initialize the new dictionary where values will be reorganized
+    test_predictions_reorg = {}
+
+    # Iterate over each group, apply regex filters, and build dataframes
+    for new_key, patterns in groupings.items():
+        matched_keys = []
+        for pattern in patterns:
+            # Use regex to match keys in the dictionary
+            matched_keys.extend([key for key in test_predictions.keys() if re.match(pattern, key)])
+        
+        if matched_keys:
+            # Create a pandas DataFrame by column-binding arrays corresponding to matched keys
+            df = pd.DataFrame({key: test_predictions[key] for key in matched_keys})
+            test_predictions_reorg[new_key] = df
+
+    return test_predictions_reorg
+
 def fit_rf_model(
     data_container: DatasetContainer,
 ) -> Tuple[pd.DataFrame, TransferForest]:
@@ -1161,41 +1197,8 @@ def fit_rf_model(
 
             if not test_predictions:
                 logger.warning(f"Empty predictions returned for test data {i}")
-            
-            test_predictions = test_predictions[0]
 
-            # Grouping definition and new keys
-            groupings = {
-                'truth': ['truth'],
-                'pred_source_full': [r'^pred_source(?!.*val).*'],
-                'pred_source_full_val': [r'^pred_source.*val.*'],
-                'pred_0_full': [r'^pred_0(?!.*val).*'],
-                'pred_0_full_val': [r'^pred_0.*val.*'],
-                'pred_1_full': [r'^pred_1(?!.*val).*'],
-                'pred_1_full_val': [r'^pred_1.*val.*'],
-                'pred_2_full': [r'^pred_2(?!.*val).*'],
-                'pred_2_full_val': [r'^pred_2.*val.*'],
-                'pred_3_full': [r'^pred_3(?!.*val).*'],
-                'pred_3_full_val': [r'^pred_3.*val.*'],
-                'pred_ensemble_full': [r'^pred_ensemble(?!.*val).*'],
-                'pred_ensemble_full_val': [r'^pred_ensemble.*val.*']
-            }
-
-            # Initialize the new dictionary where values will be reorganized
-            test_predictions_reorg = {}
-
-            # Iterate over each group, apply regex filters, and build dataframes
-            for new_key, patterns in groupings.items():
-                matched_keys = []
-                for pattern in patterns:
-                    # Use regex to match keys in the dictionary
-                    matched_keys.extend([key for key in test_predictions.keys() if re.match(pattern, key)])
-                
-                if matched_keys:
-                    # Create a pandas DataFrame by column-binding arrays corresponding to matched keys
-                    df = pd.DataFrame({key: test_predictions[key] for key in matched_keys})
-                    test_predictions_reorg[new_key] = df
-
+            test_predictions_reorg = reorg_rf_predictions(test_predictions[0])
 
             for model_type, prediction in test_predictions_reorg.items():
                 logger.info(f"Calculating metrics for test data {i} with model type: {model_type}")

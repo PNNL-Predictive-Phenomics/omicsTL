@@ -4,3 +4,4 @@ torch
 scikit-learn
 tqdm
 rpy2==3.5.16
+shap
