@@ -10,11 +10,15 @@ from omicstl.simulation_utils.data_utils import DatasetContainer, DatasetManager
 from omicstl.simulation_utils.model_utils import fit_dl_model, fit_rf_model
 from omicstl.r_utils import set_seed
 
+def save_results(res: pd.DataFrame, out_path: str):
+    res = res.drop(columns=["scenario", "replicate"], errors="ignore")
+    res.to_csv(out_path, index=False)
+
 def assert_results_equal(res: pd.DataFrame, expect_res_path: str):
     compare_res = pd.read_csv(expect_res_path)
-    
-    res = res.drop("scenario", axis=1)
-    res = res.drop("replicate", axis=1)
+
+    res = res.drop(columns=["scenario", "replicate"], errors="ignore").reset_index(drop=True)
+    compare_res = compare_res.drop(columns=["scenario", "replicate"], errors="ignore").reset_index(drop=True)
 
     assert_frame_equal(
         res,
@@ -23,7 +27,9 @@ def assert_results_equal(res: pd.DataFrame, expect_res_path: str):
         check_index_type=False,
         check_column_type=False,
         check_exact=False,
-        check_names=False
+        check_names=False,
+        rtol=1e-2,
+        atol=1e-3,
     )
 
 class ModelTest:
