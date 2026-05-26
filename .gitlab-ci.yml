@@ -38,15 +38,10 @@ pytest:
     - docker login -u "$CI_REGISTRY_USER" -p "$CI_REGISTRY_PASSWORD" "$CI_REGISTRY"
     - docker pull "$IMAGE_COMMIT"
     - mkdir -p test-results
-    - docker run --rm \
-        -v "$CI_PROJECT_DIR/test-results:/test-results" \
-        "$IMAGE_COMMIT" \
-        sh -lc "pip install -e . && pytest -v --junitxml=/test-results/report.xml"
+    - docker run --rm -v "$CI_PROJECT_DIR/test-results:/test-results" "$IMAGE_COMMIT" sh -lc 'pip install -e . && pytest -v --junitxml=/test-results/report.xml'
   artifacts:
     when: always
-    paths:
-      - test-results/report.xml
     reports:
       junit: test-results/report.xml
-  rules:
-    - if: $CI_PIPELINE_SOURCE == "push"
+    paths:
+      - test-results/report.xml
