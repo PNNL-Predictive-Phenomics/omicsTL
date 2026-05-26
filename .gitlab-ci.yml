@@ -44,4 +44,6 @@ pytest:
     reports:
       junit: test-results/report.xml
     paths:
-      - test-results/report.xml
+      - test-results/
+  rules:
+    - if: $CI_PIPELINE_SOURCE == "push"
