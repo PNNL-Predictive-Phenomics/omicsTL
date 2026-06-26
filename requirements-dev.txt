@@ -4,6 +4,8 @@
 #
 #    pip-compile --output-file=requirements-dev.txt requirements-dev.in
 #
+--extra-index-url https://download.pytorch.org/whl/cpu
+
 anyio==4.9.0
     # via
     #   httpx

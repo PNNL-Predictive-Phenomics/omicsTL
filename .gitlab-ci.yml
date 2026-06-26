@@ -25,6 +25,9 @@ build-image:
       --destination "$IMAGE_CACHE"
       --cache=true
       --cache-repo "$CI_REGISTRY_IMAGE/cache"
+      --snapshot-mode=redo
+      --use-new-run
+      --compressed-caching=false
   rules:
     - if: $CI_PIPELINE_SOURCE == "push"
 
