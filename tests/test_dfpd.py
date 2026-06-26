@@ -1,5 +1,5 @@
 import pandas as pd
-from timed.r_utils import df2pd, pd2df
+from omicstl.r_utils import df2pd, pd2df
 from pandas.testing import assert_frame_equal
 
 def test():

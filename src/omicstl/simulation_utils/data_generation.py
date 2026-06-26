@@ -71,7 +71,7 @@ def generate_synth_data(
         response_fn=response_fn,
         response_parameters=ro.NULL if response_parameters is None else response_parameters_r,
         snr=snr
-        )
+        ) # type: ignore
     else:
         result_data = ro.r["data_generator_wrapper"](
         data=pd2df(data),
@@ -83,6 +83,6 @@ def generate_synth_data(
         # Including this is crucial. Otherwise, target and source datasets are
         # not paired!
         prior_lc_info=pd2df(prior_lc_info),
-        )
+        )  # type: ignore
 
     return pd.DataFrame(df2pd(result_data.rx2("data"))), df2pd(result_data.rx2("lc_info")), result_data.rx2("cut_point")

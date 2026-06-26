@@ -164,13 +164,13 @@ class JointMLP(nn.Module):
         """Initialize a model that fuses the predictions of multiple marginal models.
 
         Args:
-                marginal_models: A list of marginal models of type simple_FC
-                hidden_dim: The number of hidden units between fc1 and fc2. Defaults to 128.
-                activation_fn: The activation function of the hidden layers.
-                dropout: The dropout rate. Defaults to 0.2.
-                combine_fn: How the views are combined in the latent space.
-                hooks: TODO: what does this do?
-                device: The device to run the model on. Defaults to None.
+            marginal_models: A list of marginal models of type simple_FC
+            hidden_dim: The number of hidden units between fc1 and fc2. Defaults to 128.
+            activation_fn: The activation function of the hidden layers.
+            dropout: The dropout rate. Defaults to 0.2.
+            combine_fn: How the views are combined in the latent space.
+            hooks: TODO: what does this do?
+            device: The device to run the model on. Defaults to None.
 
         """
         super().__init__()
@@ -183,15 +183,17 @@ class JointMLP(nn.Module):
             raise RuntimeError("Marginal models do not have the same prediction mode.")
 
         self.margin_models = torch.nn.ModuleList(marginal_models)
+        
+        first_model = marginal_models[0]
 
         if combine_fn == "mean":
             dim_fc1_in = marginal_models[0].hidden_sizes[-1]
         elif combine_fn == "concat":
-            dim_fc1_in = sum([m.hidden_sizes[-1] for m in self.margin_models])
+            dim_fc1_in = sum([m.hidden_sizes[-1] for m in marginal_models])
 
         self.combine_fn = combine_fn
         self.fc1 = nn.Linear(dim_fc1_in, hidden_dim)
-        self.fc2 = nn.Linear(hidden_dim, self.margin_models[0].prediction_dim)
+        self.fc2 = nn.Linear(hidden_dim, first_model.prediction_dim)
         self.dropout = nn.Dropout(dropout)
         self.activation_fn = activation_fn
         self.hooks = hooks
@@ -200,7 +202,7 @@ class JointMLP(nn.Module):
             self.activations: dict = {}
             self.activations_grad: dict = {}
 
-            self.fc_layers[0].register_forward_hook(self.get_activation("fc1"))
+            self.fc1.register_forward_hook(self.get_activation("fc1"))
 
         if device is not None:
             self.to(device)
@@ -366,14 +368,14 @@ def make_joint_model(
     """Create a joint model for multiple views. Each view gets its own 'marginal model', and then there is a fusion model that takes the output of each marginal model and combines them.
 
     Args:
-            data_dim: A list of input dimensions, each representing a view
-            prediction_dim: The number of output classes
-            hidden_sizes: A list of hidden sizes for each marginal model
-            dropout: The dropout rate
-            hidden_dim: The number of hidden units between fc1 and fc2 of the combination model.
-            activation_fn: The activation function
-            combine_fn: The method to combine the marginal models. Defaults to 'concat'.
-            device: The device to run the model on. Defaults to None.
+        data_dim: A list of input dimensions, each representing a view
+        prediction_dim: The number of output classes
+        hidden_sizes: A list of hidden sizes for each marginal model
+        dropout: The dropout rate
+        hidden_dim: The number of hidden units between fc1 and fc2 of the combination model.
+        activation_fn: The activation function
+        combine_fn: The method to combine the marginal models. Defaults to 'concat'.
+        device: The device to run the model on. Defaults to None.
 
     Returns:
             JointMLP: The joint model

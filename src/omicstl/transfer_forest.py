@@ -120,7 +120,7 @@ class TransferForest:
     def train_models(
         self,
         views: list[pd.DataFrame],
-        response: pd.DataFrame,
+        response: pd.Series,
     ) -> None:
         """Trains an initial random forest model using each source view.
 
@@ -141,7 +141,7 @@ class TransferForest:
                     y=self._resolve_response(response),
                     x=pd2df(view),
                     importance=True,
-                )
+                ) # type: ignore
                 self.source_models.append(model)
             except Exception as ex:
                 logger.info("Fitting model for view %s failed with error %s.", index, ex)
@@ -196,18 +196,18 @@ class TransferForest:
                     x=pd2df(view),
                     y=self._resolve_response(response),
                     rf_source=reference_model
-                ),
+                ), # type: ignore
             )
             self.ensemble_weights.append(None)
 
     def generate_predictions(
         self,
         views: list[pd.DataFrame],
-        response: pd.DataFrame | None = None,
+        response: pd.Series | None = None,
         validation_views: list[pd.DataFrame] | None = None,
-        validation_response: pd.DataFrame | None = None,
+        validation_response: pd.Series | None = None,
         ensemble_views: list[pd.DataFrame] | None = None,
-        ensemble_response: pd.DataFrame | None = None,
+        ensemble_response: pd.Series | None = None,
         integration_type: IntegrationType = IntegrationType.NONE,
     ) -> list[dict]:
         """Predicts using the transfer models on new data with optional integration of predictions across views.
@@ -267,7 +267,7 @@ class TransferForest:
                 x_ensemble = robjects.NULL if ensemble_views is None else ensemble_views[index],
                 y_ensemble = robjects.NULL if ensemble_response is None else ensemble_response,
                 ensemble_weights = robjects.NULL if self.ensemble_weights[index] is None else self.ensemble_weights[index]
-            )
+            ) # type: ignore
             validation_dicts.append(df2pd(res).to_dict(orient="list"))
 
         match integration_type:
@@ -347,7 +347,7 @@ class TransferForest:
                 response = FactorVector(FloatVector(response), levels=FloatVector(np.unique(response)))
         return response
 
-    def _bayesian_integration(self, prediction_dicts: dict, response) -> list[dict]:
+    def _bayesian_integration(self, prediction_dicts: list[dict], response) -> list[dict]:
         """Integrates predictions across views using a Bayesian approach.
 
         Args:
@@ -369,7 +369,7 @@ class TransferForest:
 
         return [inverted_prediction_dicts]
 
-    def _weighted_integration(self, prediction_dicts: dict, validation_dicts: dict, validation_response) -> list[dict]:
+    def _weighted_integration(self, prediction_dicts: list[dict], validation_dicts: list[dict], validation_response) -> list[dict]:
         """Integrates predictions across views using a weighted approach with linear regression.
 
         Args:
@@ -397,11 +397,11 @@ class TransferForest:
             meta_model.fit(predictors, validation_response)
 
             predicted_values = meta_model.predict(test_df)
-            inverted_prediction_dicts[model] = predicted_values
+            inverted_prediction_dicts[model] = predicted_values.tolist()
 
         return [inverted_prediction_dicts]
 
-    def _invert_prediction_dicts(self, prediction_dicts: dict) -> dict[str, list]:
+    def _invert_prediction_dicts(self, prediction_dicts: list[dict]) -> dict[str, list]:
         """Inverts the structure of prediction dictionaries to organize by model rather than by view.
 
         Args:

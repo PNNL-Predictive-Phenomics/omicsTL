@@ -125,8 +125,11 @@ class JointVAE(nn.Module):
             raise RuntimeError("Marginal models do not have the same prediction mode.")
 
         self.margin_models = torch.nn.ModuleList(marginal_models)
-        self.fc1 = nn.Linear(self.margin_models[0].z_dim, hidden_dim)
-        self.fc2 = nn.Linear(hidden_dim, self.margin_models[0].prediction_dim)
+
+        first_model = marginal_models[0]
+
+        self.fc1 = nn.Linear(first_model.z_dim, hidden_dim)
+        self.fc2 = nn.Linear(hidden_dim, first_model.prediction_dim)
         self.dropout = nn.Dropout(dropout)
 
         if device is not None:
