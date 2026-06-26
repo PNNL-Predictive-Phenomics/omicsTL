@@ -80,7 +80,7 @@ setup(
     version=get_version("src/omicstl/__init__.py"),
     long_description=long_description,
     description="Package for fitting various TL models",
-    author="TIMED Development Team",
+    author="omicsTL Development Team",
     author_email="javier.flores@pnnl.gov",
     license=license_,
     install_requires=requirements_,

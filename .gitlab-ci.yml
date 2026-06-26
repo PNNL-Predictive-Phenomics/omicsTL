@@ -1,0 +1,49 @@
+stages:
+  - build
+  - test
+
+variables:
+  IMAGE_COMMIT: $CI_REGISTRY_IMAGE:$CI_COMMIT_SHA
+  IMAGE_CACHE: $CI_REGISTRY_IMAGE:buildcache
+
+build-image:
+  stage: build
+  image:
+    name: gcr.io/kaniko-project/executor:debug
+    entrypoint: [""]
+  script:
+    # Write registry credentials for Kaniko
+    - mkdir -p /kaniko/.docker
+    - |
+      echo "{\"auths\":{\"$CI_REGISTRY\":{\"username\":\"$CI_REGISTRY_USER\",\"password\":\"$CI_REGISTRY_PASSWORD\"}}}" > /kaniko/.docker/config.json
+    # Build and push, using a registry-based cache
+    - >
+      /kaniko/executor
+      --context "$CI_PROJECT_DIR"
+      --dockerfile "$CI_PROJECT_DIR/Dockerfile"
+      --destination "$IMAGE_COMMIT"
+      --destination "$IMAGE_CACHE"
+      --cache=true
+      --cache-repo "$CI_REGISTRY_IMAGE/cache"
+      --snapshot-mode=redo
+      --use-new-run
+      --compressed-caching=false
+  rules:
+    - if: $CI_PIPELINE_SOURCE == "push"
+
+pytest:
+  stage: test
+  # GitLab auto-authenticates to its own registry for the job image
+  image: $IMAGE_COMMIT
+  script:
+    - mkdir -p test-results
+    - pip install -e .
+    - pytest -v --junitxml=test-results/report.xml
+  artifacts:
+    when: always
+    reports:
+      junit: test-results/report.xml
+    paths:
+      - test-results/
+  rules:
+    - if: $CI_PIPELINE_SOURCE == "push"

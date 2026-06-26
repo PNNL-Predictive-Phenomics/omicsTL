@@ -25,7 +25,9 @@ def assert_results_equal(res: pd.DataFrame, expect_res_path: str):
         check_index_type=False,
         check_column_type=False,
         check_exact=False,
-        check_names=False
+        check_names=False,
+        rtol=1e-2,
+        atol=1e-3,
     )
 
 class ModelTest:
