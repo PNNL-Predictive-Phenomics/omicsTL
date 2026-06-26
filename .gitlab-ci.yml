@@ -3,42 +3,39 @@ stages:
   - test
 
 variables:
-  DOCKER_HOST: tcp://docker:2375
-  DOCKER_TLS_CERTDIR: ""
-  DOCKER_BUILDKIT: "1"
   IMAGE_COMMIT: $CI_REGISTRY_IMAGE:$CI_COMMIT_SHA
   IMAGE_CACHE: $CI_REGISTRY_IMAGE:buildcache
 
 build-image:
   stage: build
-  image: docker:24
-  services:
-    - docker:24-dind
+  image:
+    name: gcr.io/kaniko-project/executor:debug
+    entrypoint: [""]
   script:
-    - docker login -u "$CI_REGISTRY_USER" -p "$CI_REGISTRY_PASSWORD" "$CI_REGISTRY"
-    - docker pull "$IMAGE_CACHE" || true
+    # Write registry credentials for Kaniko
+    - mkdir -p /kaniko/.docker
+    - |
+      echo "{\"auths\":{\"$CI_REGISTRY\":{\"username\":\"$CI_REGISTRY_USER\",\"password\":\"$CI_REGISTRY_PASSWORD\"}}}" > /kaniko/.docker/config.json
+    # Build and push, using a registry-based cache
     - >
-      docker build
-      --build-arg BUILDKIT_INLINE_CACHE=1
-      --cache-from "$IMAGE_CACHE"
-      -t "$IMAGE_COMMIT"
-      -t "$IMAGE_CACHE"
-      .
-    - docker push "$IMAGE_COMMIT"
-    - docker push "$IMAGE_CACHE"
+      /kaniko/executor
+      --context "$CI_PROJECT_DIR"
+      --dockerfile "$CI_PROJECT_DIR/Dockerfile"
+      --destination "$IMAGE_COMMIT"
+      --destination "$IMAGE_CACHE"
+      --cache=true
+      --cache-repo "$CI_REGISTRY_IMAGE/cache"
   rules:
     - if: $CI_PIPELINE_SOURCE == "push"
 
 pytest:
   stage: test
-  image: docker:24
-  services:
-    - docker:24-dind
+  # GitLab auto-authenticates to its own registry for the job image
+  image: $IMAGE_COMMIT
   script:
-    - docker login -u "$CI_REGISTRY_USER" -p "$CI_REGISTRY_PASSWORD" "$CI_REGISTRY"
-    - docker pull "$IMAGE_COMMIT"
     - mkdir -p test-results
-    - docker run --rm -v "$CI_PROJECT_DIR/test-results:/test-results" "$IMAGE_COMMIT" sh -lc 'pip install -e . && pytest -v --junitxml=/test-results/report.xml'
+    - pip install -e .
+    - pytest -v --junitxml=test-results/report.xml
   artifacts:
     when: always
     reports:
