@@ -15,4 +15,4 @@ def pd2df(pd: pd.DataFrame) -> DataFrame:
         return ro.conversion.get_conversion().py2rpy(pd)
     
 def set_seed(seed: int) -> None:
-    ro.r["set.seed"](seed)
+    ro.r["set.seed"](seed) # type: ignore

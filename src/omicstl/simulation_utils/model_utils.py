@@ -2,10 +2,11 @@
 
 import logging
 from dataclasses import dataclass
-from typing import Any, NamedTuple, Tuple
+from typing import Any, Literal, NamedTuple, Tuple, TypedDict
 
 import numpy as np
 import pandas as pd
+import torch
 from sklearn.model_selection import KFold, LeaveOneOut, ParameterGrid, StratifiedKFold
 from torch import device
 import re
@@ -43,6 +44,12 @@ class DataPartition:
 
 
 @dataclass
+class TrainingDict(TypedDict):
+    training: DataPartition
+    early_stopping: DataPartition | None
+
+
+@dataclass
 class CVFoldData:
     """Container for cross-validation fold data."""
 
@@ -51,7 +58,7 @@ class CVFoldData:
     early_stopping: DataPartition | None = None
     fold_idx: int = 0
 
-    def get_training_dict(self) -> dict[str, DataPartition | None]:
+    def get_training_dict(self) -> TrainingDict:
         return {"training": self.train, "early_stopping": self.early_stopping}
 
 
@@ -66,6 +73,7 @@ class ModelConfig:
     output_dim: int
 
 
+@dataclass
 class TuningResult(NamedTuple):
     """Result of hyperparameter tuning."""
 
@@ -98,7 +106,7 @@ def calculate_metrics(
     true_values: pd.Series | np.ndarray,
     predicted_values: pd.Series | np.ndarray,
     is_classification: bool,
-    predicted_probs: np.ndarray = None
+    predicted_probs: np.ndarray | None = None
 ) -> dict[str, float]:
     """Calculate evaluation metrics for model predictions.
 
@@ -153,10 +161,11 @@ def calculate_metrics(
 
         metrics["acc"] = float(accuracy_score(y_true = truth_classes, 
                                               y_pred = predicted_classes))
-        metrics["roc_auc"] = float(roc_auc_score(y_true = truth_classes, 
-                                                 y_score = predicted_probs,
-                                                 multi_class = "ovr" if len(unique_classes) > 2 else "raise",
-                                                 average = 'weighted'))
+        if predicted_probs is not None:
+            metrics["roc_auc"] = float(roc_auc_score(y_true = truth_classes, 
+                                                    y_score = predicted_probs,
+                                                    multi_class = "ovr" if len(unique_classes) > 2 else "raise",
+                                                    average = 'weighted'))
         metrics["mcc"] = float(matthews_corrcoef(y_true = truth_classes, 
                                                  y_pred = predicted_classes))
         metrics["f1"] = float(f1_score(y_true = truth_classes, 
@@ -324,29 +333,31 @@ def evaluate_model(
 
 def train_model(
     model: TransferMLP | TransferVAE,
-    data: dict[str, DataPartition],
+    data: TrainingDict,
     config: ModelConfig,
     model_id: str,
     source_model: str | None = None,
     lr: float = 0.001,
     gamma: float = 2,
-    weight_decay: float = 1e-4,
+    weight_decay: float = 1e-4
 ) -> None:
     """Train a model on the provided data.
 
     Args:
-    model: Model to train
-    data: Training data
-    config: Model configuration
-    model_id: ID to use for the model ("source" or "target")
-    source_model: Name of source model for transfer learning
-    lr: learning rate
-
+        model: Model to train
+        data: Training data
+        config: Model configuration
+        model_id: ID to use for the model ("source" or "target")
+        source_model: Name of source model for transfer learning
+        lr: learning rate
     """
     train_data = data["training"]
     early_stopping_data = data["early_stopping"]
+    # Force dims update when initialising the target model — its feature set may
+    # differ from the source model that was trained first on this same object.
+    force_dims = source_model is not None
     try:
-        model.set_model_dims([train_data.features], config.output_dim)
+        model.set_model_dims([train_data.features], config.output_dim, force=force_dims)
     except Exception:
         logger.exception("Error setting model dimensions")
 
@@ -370,15 +381,16 @@ def train_model(
         verbose=True,
         test_views=[early_stopping_data.features] if early_stopping_data else None,
         y_test=early_stopping_data.response if early_stopping_data else None,
-        gamma=config.hyperparams.get("gamma"),
+        gamma=float(config.hyperparams.get("gamma", gamma)),
     )
 
 def predict_dl_model(
     pretrained_model: TransferMLP | TransferVAE,
     features: pd.DataFrame,
-    model_id: str = "target"
+    model_id: str = "target",
+    return_probabilities = False
 ):
-    return pretrained_model.__getattribute__(model_id).predict([features])
+    return pretrained_model.__getattribute__(model_id).predict([features], return_probabilities=return_probabilities)
 
 def create_cv_folds(
     feature_matrix: pd.DataFrame,
@@ -443,10 +455,10 @@ def aggregate_fold_metrics(fold_metrics: list[dict[str, Any]]) -> dict[str, Any]
     """Aggregate metrics across folds.
 
     Args:
-    fold_metrics: List of metric dictionaries from each fold
+        fold_metrics: List of metric dictionaries from each fold
 
     Returns:
-    Dictionary with averaged metrics
+        Dictionary with averaged metrics
 
     """
     if not fold_metrics:
@@ -457,7 +469,9 @@ def aggregate_fold_metrics(fold_metrics: list[dict[str, Any]]) -> dict[str, Any]
     numeric_cols = fold_df.select_dtypes(include=np.number).columns.tolist()
     non_numeric_cols = [col for col in fold_df.columns if col not in numeric_cols and col != "fold"]
 
-    mean_metrics = fold_df[numeric_cols].mean().to_dict()
+    mean_metrics: dict[str, Any] = {
+        str(k): v for k, v in fold_df[numeric_cols].mean().to_dict().items()
+    }
 
     for col in non_numeric_cols:
         mean_metrics[col] = fold_df[col].iloc[0]
@@ -541,7 +555,7 @@ def _create_loo_folds(
 def _create_kfold_folds(
     feature_matrix: pd.DataFrame,
     response_values: pd.Series,
-    cv_splitter,
+    cv_splitter: KFold | StratifiedKFold,
 ) -> list[CVFoldData]:
     all_folds = list(cv_splitter.split(feature_matrix, response_values))
     n_actual_splits = len(all_folds)
@@ -553,10 +567,13 @@ def _create_kfold_folds(
         early_stop_fold_idx = (val_fold_idx + 1) % n_actual_splits
         _, early_stop_indices = all_folds[early_stop_fold_idx]
 
-        train_indices = []
-        for i in range(n_actual_splits):
-            if i != val_fold_idx and i != early_stop_fold_idx:
-                train_indices.extend(all_folds[i][1])
+        train_indices = np.concatenate(
+            [
+                all_folds[i][1]
+                for i in range(n_actual_splits)
+                if i != val_fold_idx and i != early_stop_fold_idx
+            ]
+        ).astype(np.int_, copy=False)
 
         train_features = feature_matrix.iloc[train_indices]
         train_response = response_values.iloc[train_indices]
@@ -625,25 +642,25 @@ def create_k_minus_2_cv_folds(
 
 def tune_model_cv(
     data_partition: DataPartition,
-    model_type: str,
+    model_type: Literal["mult_mlp", "mult_vae"],
     output_dim: int,
     torch_device: device,
-    param_grid: dict[str, list[Any]],
+    param_grid: dict[str, Any],
     n_splits: int = 5,
     metric: str | None = None,
 ) -> dict[str, Any]:
     """Tune model hyperparameters using cross-validation on the provided data partition.
 
     Args:
-    data_partition: Data partition to use for tuning
-    model_type: Type of model to tune ("mult_mlp" or "mult_vae")
-    torch_device: Torch device to train model using
-    param_grid: Dictionary of parameter names and values to search
-    n_splits: Number of CV folds (will be adjusted for small datasets)
-    metric: Performance metric to optimize
+        data_partition: Data partition to use for tuning
+        model_type: Type of model to tune
+        torch_device: Torch device to train model using
+        param_grid: Dictionary of parameter names and values to search
+        n_splits: Number of CV folds (will be adjusted for small datasets)
+        metric: Performance metric to optimize
 
     Returns:
-    Dictionary of best parameters
+        Dictionary of best parameters
 
     """
     is_classification = data_partition.response.dtype == np.int64
@@ -745,11 +762,11 @@ def get_feature_columns(data: pd.DataFrame, response_id: str) -> list[str]:
     """Extract feature column names from dataset.
 
     Args:
-    data: DataFrame containing features and response
-    response_id: String identifier for response column in data.
+        data: DataFrame containing features and response
+        response_id: String identifier for response column in data.
 
     Returns:
-    List of feature column names
+        List of feature column names
 
     """
     return [col for col in data.columns if col != response_id]
@@ -763,12 +780,12 @@ def split_dataframe_indices(
     """Split row indices of a pandas DataFrame into two sets based on a proportion.
 
     Args:
-    df: The pandas DataFrame to split indices from.
-    first_split_proportion: Proportion of indices to include in the first set (0.0-1.0).
-    random_state: Optional random seed for reproducibility.
+        df: The pandas DataFrame to split indices from.
+        first_split_proportion: Proportion of indices to include in the first set (0.0-1.0).
+        random_state: Optional random seed for reproducibility.
 
     Returns:
-    A tuple containing two lists of indices: (first_indices, second_indices).
+        A tuple containing two lists of indices: (first_indices, second_indices).
 
     """
     if not 0 <= first_split_proportion <= 1:
@@ -822,11 +839,12 @@ def create_data_partition(
 
 def fit_dl_model(
     data_container: DatasetContainer,
-    model_type: str,
+    model_type: Literal["mult_mlp", "mult_vae"],
     torch_device: device,
     param_grid: dict[str, float | bool | str] | None = None,
+    mmd_weight: float | None = None,
     **kwargs: float | str,
-) -> tuple[pd.DataFrame, TransferMLP | TransferVAE, TransferMLP | TransferVAE]:
+) -> tuple[pd.DataFrame, TransferMLP | TransferVAE | None, TransferMLP | TransferVAE | None]:
     """Fit a deep learning model with optional hyperparameter tuning via cross-validation.
 
     Args:
@@ -850,56 +868,56 @@ def fit_dl_model(
     response_id = data_container.response_id
     is_classification = data_container.is_classification()
 
-    feature_cols = get_feature_columns(
-        data_container.source_data,
-        response_id=response_id,
-    )
+    source_feature_cols = get_feature_columns(data_container.source_data, response_id=response_id)
+    target_feature_cols = get_feature_columns(data_container.target_data, response_id=response_id)
 
-    # Create source partitions
+    # Create source partitions (always use source feature columns)
     source_train_samples, source_validation_samples = split_dataframe_indices(data_container.source_data, 0.9)
 
     source_train_partition = create_data_partition(
         data=data_container.source_data,
-        feature_cols=feature_cols,
+        feature_cols=source_feature_cols,
         response_id=response_id,
         row_ids=source_train_samples,
     )
 
     source_validation_partition = create_data_partition(
         data=data_container.source_data,
-        feature_cols=feature_cols,
+        feature_cols=source_feature_cols,
         response_id=response_id,
         row_ids=source_validation_samples,
     )
 
-    # Create target partitions
+    # Create target partitions (always use target feature columns)
     target_train_samples, target_validation_samples = split_dataframe_indices(data_container.target_data, 0.9)
 
     target_full = create_data_partition(
         data=data_container.target_data,
-        feature_cols=feature_cols,
+        feature_cols=target_feature_cols,
         response_id=response_id,
     )
 
     target_train_partition = create_data_partition(
         data=data_container.target_data,
-        feature_cols=feature_cols,
+        feature_cols=target_feature_cols,
         response_id=response_id,
         row_ids=target_train_samples,
     )
 
     target_validation_partition = create_data_partition(
         data=data_container.target_data,
-        feature_cols=feature_cols,
+        feature_cols=target_feature_cols,
         response_id=response_id,
         row_ids=target_validation_samples,
     )
 
-    source_partition = {"training": source_train_partition, "early_stopping": source_validation_partition}
-    target_partition = {"training": target_full, "early_stopping": None}
-    target_partition_nosource = {"training": target_train_partition, "early_stopping": target_validation_partition}
+    source_partition: TrainingDict = {"training": source_train_partition, "early_stopping": source_validation_partition}
+    target_partition: TrainingDict = {"training": target_full, "early_stopping": None}
+    target_partition_nosource: TrainingDict = {"training": target_train_partition, "early_stopping": target_validation_partition}
 
     output_dim = data_container.source_data[response_id].nunique() if is_classification else 1
+
+    best_params_nosource: dict = {}
 
     if param_grid is not None:
         logger.info("Tuning parameters using source data")
@@ -959,14 +977,14 @@ def fit_dl_model(
         data=source_partition,
         config=config,
         model_id="source",
-        lr=hyperparams.get("lr", 0.01),
-        gamma=hyperparams.get("gamma", 2),
-        weight_decay=hyperparams.get("weight_decay", 0.01),
+        lr=float(hyperparams.get("lr", 0.01)),
+        gamma=float(hyperparams.get("gamma", 2)),
+        weight_decay=float(hyperparams.get("weight_decay", 0.01)),
     )
 
     if not hasattr(data_container, "target_data") or data_container.target_data is None:
         logger.warning("No target data found, returning early")
-        return results
+        return results, None, None
 
     logger.info("Transferring to target domain")
     train_model(
@@ -975,9 +993,9 @@ def fit_dl_model(
         config=config,
         model_id="target",
         source_model="source",
-        lr=hyperparams.get("lr", 0.01),
-        gamma=hyperparams.get("gamma", 2),
-        weight_decay=hyperparams.get("weight_decay", 0.01),
+        lr=float(hyperparams.get("lr", 0.01)),
+        gamma=float(hyperparams.get("gamma", 2)),
+        weight_decay=float(hyperparams.get("weight_decay", 0.01))
     )
 
     # Target only model
@@ -1017,14 +1035,14 @@ def fit_dl_model(
 
     if not hasattr(data_container, "target_test_data") or not data_container.target_test_data:
         logger.warning("No test data found, returning early")
-        return results
+        return results, None, None
 
     for i, test_dataset in enumerate(data_container.target_test_data):
         logger.info("Evaluating on test set %s", i + 1)
         test_data = create_data_partition(
             data=test_dataset,
             response_id=response_id,
-            feature_cols=feature_cols,
+            feature_cols=target_feature_cols,
         )
 
         test_context = EvaluationContext(
@@ -1057,22 +1075,61 @@ def fit_dl_model(
 
     return results, model, model_nosource
 
+def reorg_rf_predictions(test_predictions) -> dict:
+    # Grouping definition and new keys
+    groupings = {
+        'truth': ['truth'],
+        'pred_source_full': [r'^pred_source(?!.*val).*'],
+        'pred_source_full_val': [r'^pred_source.*val.*'],
+        'pred_0_full': [r'^pred_0(?!.*val).*'],
+        'pred_0_full_val': [r'^pred_0.*val.*'],
+        'pred_1_full': [r'^pred_1(?!.*val).*'],
+        'pred_1_full_val': [r'^pred_1.*val.*'],
+        'pred_2_full': [r'^pred_2(?!.*val).*'],
+        'pred_2_full_val': [r'^pred_2.*val.*'],
+        'pred_3_full': [r'^pred_3(?!.*val).*'],
+        'pred_3_full_val': [r'^pred_3.*val.*'],
+        'pred_ensemble_full': [r'^pred_ensemble(?!.*val).*'],
+        'pred_ensemble_full_val': [r'^pred_ensemble.*val.*']
+    }
+
+    # Initialize the new dictionary where values will be reorganized
+    test_predictions_reorg = {}
+
+    # Iterate over each group, apply regex filters, and build dataframes
+    for new_key, patterns in groupings.items():
+        matched_keys = []
+        for pattern in patterns:
+            # Use regex to match keys in the dictionary
+            matched_keys.extend([key for key in test_predictions.keys() if re.match(pattern, key)])
+        
+        if matched_keys:
+            # Create a pandas DataFrame by column-binding arrays corresponding to matched keys
+            df = pd.DataFrame({key: test_predictions[key] for key in matched_keys})
+            test_predictions_reorg[new_key] = df
+
+    return test_predictions_reorg
+
 def fit_rf_model(
-    data_container: DatasetContainer,
+    data_container: DatasetContainer
 ) -> Tuple[pd.DataFrame, TransferForest]:
     """Fit a random forest transfer learning model.
 
     Args:
-                                    data_container: Container with source and target data
+        data_container: Container with source and target data.
 
     Returns:
-                                    DataFrame with model evaluation results
+        DataFrame with model evaluation results and the fitted TransferForest.
 
     """
     load_r_functions()
 
     logger.info("Starting random forest model fitting")
     results = create_results_df()
+
+    if data_container.id_tuple is None:
+        raise ValueError("data_container does not have any loaded datasets")
+    
     replicate, scenario = data_container.id_tuple
     response_id = data_container.response_id
     logger.info(f"Processing scenario: {scenario}, replicate: {replicate}")
@@ -1080,23 +1137,21 @@ def fit_rf_model(
     is_classification = data_container.is_classification()
     logger.info(f"Task type: {'Classification' if is_classification else 'Regression'}")
 
-    feature_cols = get_feature_columns(
-        data=data_container.source_data,
-        response_id=response_id,
-    )
-    logger.info(f"Using {len(feature_cols)} features for modeling")
+    source_feature_cols = get_feature_columns(data=data_container.source_data, response_id=response_id)
+    target_feature_cols = get_feature_columns(data=data_container.target_data, response_id=response_id)
+
+    logger.info(f"Using {len(source_feature_cols)} source / {len(target_feature_cols)} target features")
 
     source_data = create_data_partition(
         data=data_container.source_data,
         response_id=response_id,
-        feature_cols=feature_cols,
+        feature_cols=source_feature_cols,
     )
     target_data = create_data_partition(
         data=data_container.target_data,
         response_id=response_id,
-        feature_cols=feature_cols,
+        feature_cols=target_feature_cols,
     )
-    logger.info(f"Source data shape: {source_data.features.shape}, Target data shape: {target_data.features.shape}")
 
     logger.info("Initializing TransferForest model")
     transfer_forest = TransferForest()
@@ -1130,17 +1185,16 @@ def fit_rf_model(
             test_data = create_data_partition(
                 data=test_dataset,
                 response_id=response_id,
-                feature_cols=feature_cols,
+                feature_cols=target_feature_cols,
             )
-            logger.info(f"Test data {i} shape: {test_data.features.shape}")
-
+            
             ensemble_views = None
             ensemble_response = None
             if data_container.target_ensemble_data is not None:
                 ensemble_data = create_data_partition(
                     data_container.target_ensemble_data,
                     response_id=response_id,
-                    feature_cols=feature_cols
+                    feature_cols=target_feature_cols,
                 )
 
                 ensemble_views = [ensemble_data.features]
@@ -1161,41 +1215,8 @@ def fit_rf_model(
 
             if not test_predictions:
                 logger.warning(f"Empty predictions returned for test data {i}")
-            
-            test_predictions = test_predictions[0]
 
-            # Grouping definition and new keys
-            groupings = {
-                'truth': ['truth'],
-                'pred_source_full': [r'^pred_source(?!.*val).*'],
-                'pred_source_full_val': [r'^pred_source.*val.*'],
-                'pred_0_full': [r'^pred_0(?!.*val).*'],
-                'pred_0_full_val': [r'^pred_0.*val.*'],
-                'pred_1_full': [r'^pred_1(?!.*val).*'],
-                'pred_1_full_val': [r'^pred_1.*val.*'],
-                'pred_2_full': [r'^pred_2(?!.*val).*'],
-                'pred_2_full_val': [r'^pred_2.*val.*'],
-                'pred_3_full': [r'^pred_3(?!.*val).*'],
-                'pred_3_full_val': [r'^pred_3.*val.*'],
-                'pred_ensemble_full': [r'^pred_ensemble(?!.*val).*'],
-                'pred_ensemble_full_val': [r'^pred_ensemble.*val.*']
-            }
-
-            # Initialize the new dictionary where values will be reorganized
-            test_predictions_reorg = {}
-
-            # Iterate over each group, apply regex filters, and build dataframes
-            for new_key, patterns in groupings.items():
-                matched_keys = []
-                for pattern in patterns:
-                    # Use regex to match keys in the dictionary
-                    matched_keys.extend([key for key in test_predictions.keys() if re.match(pattern, key)])
-                
-                if matched_keys:
-                    # Create a pandas DataFrame by column-binding arrays corresponding to matched keys
-                    df = pd.DataFrame({key: test_predictions[key] for key in matched_keys})
-                    test_predictions_reorg[new_key] = df
-
+            test_predictions_reorg = reorg_rf_predictions(test_predictions[0])
 
             for model_type, prediction in test_predictions_reorg.items():
                 logger.info(f"Calculating metrics for test data {i} with model type: {model_type}")
@@ -1327,7 +1348,12 @@ def update_rf_model(
     return results, transfer_model
 
 def predict_rf_model(
-    pretrained_model : TransferForest,
-    input_data : pd.DataFrame 
-):
+    pretrained_model: TransferForest,
+    input_data: pd.DataFrame,
+) -> dict:
+    """Predict response values using a pre-trained random forest transfer model.
+
+    Args:
+        pretrained_model: the trained TransferForest model to use to predict.
+    """
     return pretrained_model.generate_predictions([input_data])[0]
