@@ -1,10 +1,11 @@
 """Utilities for loading and manipulating simulated multiomics data."""
 
+from dataclasses import dataclass
 import logging
 import pathlib
 import re
 from collections import defaultdict
-from typing import Any
+from typing import Any, TypedDict
 
 import numpy as np
 import pandas as pd
@@ -45,7 +46,7 @@ class DatasetContainer:
         self.target_data = target_data
         self.target_test_data = target_test_data if target_test_data is not None else []
         self.target_ensemble_data = target_ensemble_data
-        self.id_tuple = id_tuple if id_tuple else (None, None)
+        self.id_tuple = id_tuple if id_tuple else None
         self.response_id: str
 
         self.source_train_data: pd.DataFrame | None = None
@@ -141,6 +142,13 @@ class DatasetContainer:
             f"  Target test data: {len(self.target_test_data)} datasets"
         )
 
+@dataclass
+class GroupedPathEntry(TypedDict):
+    source: str | None
+    target: str | None
+    target_ensemble: str | None
+    target_test: list[str]
+
 
 class DatasetManager:
     """Manage and load simulated datasets organized by replicate/scenario IDs.
@@ -159,7 +167,7 @@ class DatasetManager:
         """
         # Store directory path (convert to Path object internally if string is provided)
         self.directory_path = directory_path
-        self.grouped_paths: dict[tuple[int, int], dict[str, Any]] | None = None
+        self.grouped_paths: dict[tuple[int, int], GroupedPathEntry] | None = None
 
     def scan_directory(self) -> "DatasetManager":
         """Scan the directory and group CSV files based on their scenario and replicated ids.
@@ -168,7 +176,7 @@ class DatasetManager:
             self: For method chaining
 
         """
-        grouped_paths: dict[tuple[int, int], dict[str, str | None | list[str]]] = defaultdict(
+        grouped_paths: dict[tuple[int, int], GroupedPathEntry] = defaultdict(
             lambda: {"source": None, "target": None, "target_ensemble": None, "target_test": []},  # Initialize as empty list
         )
         pattern = r"(source|target|target_test|target_ensemble)_data_(\d+)_(\d+)\.csv"
@@ -196,7 +204,7 @@ class DatasetManager:
             elif file_type == "target_ensemble":
                 grouped_paths[key]["target_ensemble"] = str(file_path)
 
-        self.grouped_paths = dict(grouped_paths)
+        self.grouped_paths = grouped_paths
         return self
 
     def get_available_ids(self) -> list[tuple[int, int]]:
@@ -349,7 +357,7 @@ class DatasetManager:
             raise ValueError(msg)
         
         target_ensemble_data=datasets["target_ensemble"]
-        if not isinstance(target_ensemble_data, pd.DataFrame) and ensemble_data is not None:
+        if not isinstance(target_ensemble_data, pd.DataFrame) and target_ensemble_data is not None:
             msg = "Read target_ensemble data is not dataframe."
             raise ValueError(msg)
 
