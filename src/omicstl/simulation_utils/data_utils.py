@@ -46,7 +46,7 @@ class DatasetContainer:
         self.target_data = target_data
         self.target_test_data = target_test_data if target_test_data is not None else []
         self.target_ensemble_data = target_ensemble_data
-        self.id_tuple = id_tuple if id_tuple else None
+        self.id_tuple = id_tuple if id_tuple else (None, None)
         self.response_id: str
 
         self.source_train_data: pd.DataFrame | None = None
