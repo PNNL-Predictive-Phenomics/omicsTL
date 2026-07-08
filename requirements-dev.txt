@@ -177,6 +177,8 @@ markupsafe==3.0.2
     #   nbconvert
 matplotlib==3.10.3
     # via -r requirements-dev.in
+seaborn==0.13.2
+    # via -r requirements-dev.in
 matplotlib-inline==0.1.7
     # via
     #   ipykernel

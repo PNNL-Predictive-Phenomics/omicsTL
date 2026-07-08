@@ -1,5 +1,6 @@
 """API for fitting deep learning models in a transfer learning context."""
 from abc import abstractmethod
+import copy
 import sys
 
 sys.path.append("../")
@@ -105,6 +106,7 @@ class ModelObject:
             test_tensors: list[torch.Tensor] = self.as_tensors(test_views)
 
         best_metric = float("inf") if self.prediction_mode == PredictionMode.REGRESSION else -float("inf")
+        best_state_dict = None
         epochs_without_improvement = 0
 
         for i in range(epochs):
@@ -150,6 +152,7 @@ class ModelObject:
 
             if improved:
                 best_metric = current_metric
+                best_state_dict = copy.deepcopy(self.model.state_dict())
                 epochs_without_improvement = 0
             else:
                 epochs_without_improvement += 1
@@ -157,6 +160,9 @@ class ModelObject:
                     if verbose:
                         logger.info(f"Early stopping at epoch {i + 1} — no improvement in {patience} epochs.")
                     break
+
+        if best_state_dict is not None:
+            self.model.load_state_dict(best_state_dict)
 
         self.loss_history = loss_history
         self.train_metric = train_metric
@@ -288,6 +294,7 @@ class TransferVAE(MultiViewModel):
         z_dim: int,
         dropout: float,
         hidden_dim: int,
+        var_beta: float = 0.01,
     ) -> None:
         """Initializes a container for a variational autoencoder (VAE) model used in multi-omics transfer learning.
 
@@ -295,13 +302,15 @@ class TransferVAE(MultiViewModel):
             hidden_sizes: A list of hidden sizes for each marginal model
             z_dim: The dimensionality of the latent representation.
             dropout: The dropout rate. Defaults to 0.2.
-            hidden_dim: The number of hidden units between fc1 and fc2 of the combination model. #TODO: improve this docstring
+            hidden_dim: The number of hidden units between fc1 and fc2 of the combination model.
+            var_beta: Weight of the KL divergence term in the ELBO. Lower values relax the prior; higher values enforce a tighter latent space. Defaults to 0.01.
 
         """
         self.hidden_sizes = hidden_sizes
         self.z_dim = z_dim
         self.dropout = dropout
         self.hidden_dim = hidden_dim
+        self.var_beta = var_beta
         self.model = self
 
     def create_model(
@@ -368,7 +377,7 @@ class TransferVAE(MultiViewModel):
         model = model_object.model
 
         assert type(model) is JointVAE
-        loss = model.loss(response, yhat, poe_dist, yhats, dists, var_beta=0.01, gamma=gamma)
+        loss = model.loss(response, yhat, poe_dist, yhats, dists, var_beta=self.var_beta, gamma=gamma)
             
         return loss, yhat
 
@@ -467,6 +476,6 @@ class TransferMLP(MultiViewModel):
         model = model_object.model
 
         assert type(model) is JointMLP
-        _, _, loss = model.loss(response, yhat, yhats, gamma=gamma)
+        _, _, loss = model.loss(response, yhat, yhats, focal=True, gamma=gamma)
 
         return loss, yhat

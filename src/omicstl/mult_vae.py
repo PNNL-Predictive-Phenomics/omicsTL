@@ -296,8 +296,10 @@ class JointVAE(nn.Module):
             torch.distributions.Normal: The product of experts distribution
 
         """
-        # assume mu_0 = 0, S_0 = I
-        var_poe = 1
+        # Uniform prior (zero precision): let the view experts alone determine the posterior.
+        # The KL term in the loss already enforces the N(0,I) prior — starting with var_poe=1
+        # would add a redundant N(0,I) expert and over-regularize the posterior toward zero.
+        var_poe = 0
         mu_poe = 0
 
         for dist in dists:

@@ -86,3 +86,138 @@ def generate_synth_data(
         )  # type: ignore
 
     return pd.DataFrame(df2pd(result_data.rx2("data"))), df2pd(result_data.rx2("lc_info")), result_data.rx2("cut_point")
+
+
+def generate_synth_data_pca(
+    source_data: pd.DataFrame,
+    target_data: pd.DataFrame,
+    n_output_samps_source: int,
+    n_output_samps_target: int,
+    n_output_features: int | None = None,
+    n_components: int | None = None,
+    regularization: float = 1e-6,
+) -> tuple[pd.DataFrame, pd.DataFrame]:
+    """Generate paired synthetic source and target data via PCA-based simulation.
+
+    Both domains are simulated together using a shared joint PCA so their
+    correlation structures are comparable.  Unlike generate_synth_data, no
+    response column is added; the returned DataFrames contain features only.
+
+    Args:
+        source_data: Feature-only DataFrame for the source domain.
+        target_data: Feature-only DataFrame for the target domain.
+        n_output_samps_source: Number of synthetic source samples to generate.
+        n_output_samps_target: Number of synthetic target samples to generate.
+        n_output_features: Number of output features.  If None all p common
+            features are returned.  If <= p a random subset is returned with
+            exact statistics preserved.  If > p structured LC mixing is used.
+        n_components: PCA components to retain.  Defaults to min(n_source-1, p).
+        regularization: Ridge term added to PC-space covariance for
+            positive-definiteness.  Default 1e-6.
+
+    Returns:
+        (synth_source, synth_target) feature-only DataFrames.
+    """
+    ro.r["Sys.setenv"](OMICSTL_PKG_ROOT=_PKG_ROOT())
+    ro.r["source"](os.path.join(_PKG_ROOT(), "r", "requirements.R"))
+    ro.r["source"](os.path.join(_PKG_ROOT(), "r", "data_simulation_utils.R"))
+
+    # Keep only numeric columns before passing to R; non-numeric columns
+    # (object/category dtype from CSV row-labels, protein IDs, etc.) become
+    # character vectors in R and cause colMeans / svd to fail.
+    source_data = source_data.select_dtypes(include="number")
+    target_data = target_data.select_dtypes(include="number")
+
+    kwargs: dict = dict(
+        source_data=pd2df(source_data),
+        target_data=pd2df(target_data),
+        n_output_samps_source=int(n_output_samps_source),
+        n_output_samps_target=int(n_output_samps_target),
+        regularization=float(regularization),
+    )
+    if n_output_features is not None:
+        kwargs["n_output_features"] = int(n_output_features)
+    if n_components is not None:
+        kwargs["n_components"] = int(n_components)
+
+    result = ro.r["dat_generator_pca"](**kwargs)
+    synth_source = pd.DataFrame(df2pd(result.rx2("synth_source")))
+    synth_target = pd.DataFrame(df2pd(result.rx2("synth_target")))
+    return synth_source, synth_target
+
+
+def generate_synth_data_multiomics_pca(
+    source_omics: dict[str, pd.DataFrame],
+    target_omics: dict[str, pd.DataFrame],
+    n_output_samps_source: int,
+    n_output_samps_target: int,
+    n_output_features: dict[str, int] | None = None,
+    n_components: int | None = None,
+    regularization: float = 1e-6,
+) -> tuple[dict[str, pd.DataFrame], dict[str, pd.DataFrame]]:
+    """Generate paired synthetic multi-omics source and target datasets via PCA.
+
+    Each omic layer is standardized to unit variance per feature before
+    concatenation so no single omic dominates the shared PC space.  Cross-omic
+    correlations are preserved because all layers enter the PCA together.
+    Output is split back into per-omic DataFrames at their original scales.
+
+    Args:
+        source_omics: Dict mapping omic name to feature-only DataFrame (source domain).
+        target_omics: Dict mapping omic name to feature-only DataFrame (target domain).
+            Must have the same keys as source_omics.
+        n_output_samps_source: Number of synthetic source samples to generate.
+        n_output_samps_target: Number of synthetic target samples to generate.
+        n_output_features: Optional dict mapping omic name to desired output
+            feature count (e.g. {"prot": 100, "rna": 200}).  Values <= p
+            subsample randomly; values > p use variance-weighted LC mixing.
+            Omics not listed keep all their features.  Default None (keep all).
+        n_components: PCA components to retain per domain. Default None (max rank).
+        regularization: Ridge term added to PC-space covariance. Default 1e-6.
+
+    Returns:
+        (synth_source, synth_target) — each is a dict mapping omic name to a
+        feature-only DataFrame of synthetic samples.
+    """
+    ro.r["Sys.setenv"](OMICSTL_PKG_ROOT=_PKG_ROOT())
+    ro.r["source"](os.path.join(_PKG_ROOT(), "r", "requirements.R"))
+    ro.r["source"](os.path.join(_PKG_ROOT(), "r", "data_simulation_utils.R"))
+
+    source_r = ro.ListVector({
+        k: pd2df(df.select_dtypes(include="number"))
+        for k, df in source_omics.items()
+    })
+    target_r = ro.ListVector({
+        k: pd2df(df.select_dtypes(include="number"))
+        for k, df in target_omics.items()
+    })
+
+    kwargs: dict = dict(
+        source_omics=source_r,
+        target_omics=target_r,
+        n_output_samps_source=int(n_output_samps_source),
+        n_output_samps_target=int(n_output_samps_target),
+        regularization=float(regularization),
+    )
+    if n_output_features is not None:
+        kwargs["n_output_features"] = ro.ListVector(
+            {k: ro.IntVector([v]) for k, v in n_output_features.items()}
+        )
+    if n_components is not None:
+        kwargs["n_components"] = int(n_components)
+
+    result = ro.r["dat_generator_multiomics_pca"](**kwargs)
+
+    synth_source_r = result.rx2("synth_source")
+    synth_target_r = result.rx2("synth_target")
+    omic_names = list(synth_source_r.names)
+
+    synth_source = {
+        name: pd.DataFrame(df2pd(synth_source_r.rx2(name)))
+        for name in omic_names
+    }
+    synth_target = {
+        name: pd.DataFrame(df2pd(synth_target_r.rx2(name)))
+        for name in omic_names
+    }
+    return synth_source, synth_target

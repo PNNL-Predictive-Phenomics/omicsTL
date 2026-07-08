@@ -74,7 +74,7 @@ source_data <- impute_pmart_em(source_data)
 ## Load and process target data
 target_data <- readRDS("/qfs/projects/ppi_timed/datagen/Datasets/Virus/LHV_MMVE002/Processed_Data/mmve002_pepdata_24hr.RDS")
 
-target_data <- source_data %>%
+target_data <- target_data %>%
   normalize_global(
     norm_fn = 'median',
     subset_fn = 'all',
@@ -125,5 +125,6 @@ generate_from_data(
   seed = 42,
   out_dir = "./data/simulated_data/fixed_samplesize_large/",
   verbose = TRUE,
-  n_cores = 60
+  n_cores = 60,
+  method = "pca"
 )
