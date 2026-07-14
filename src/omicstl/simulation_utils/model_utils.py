@@ -41,6 +41,18 @@ class DataPartition:
 
     features: pd.DataFrame
     response: pd.Series
+    view_column_groups: dict[str, list[str]] | None = None
+
+    @property
+    def views(self) -> list[pd.DataFrame]:
+        """Return per-view feature DataFrames.
+
+        Single-omics: returns [self.features].
+        Multi-omics: splits self.features by view_column_groups and returns one DataFrame per view.
+        """
+        if self.view_column_groups is None:
+            return [self.features]
+        return [self.features[cols] for cols in self.view_column_groups.values()]
 
 
 @dataclass
@@ -71,6 +83,7 @@ class ModelConfig:
     is_classification: bool
     torch_device: device
     output_dim: int
+    n_views: int = 1
 
 
 @dataclass
@@ -213,16 +226,17 @@ def create_model(config: ModelConfig) -> TransferMLP | TransferVAE:
 
     if config.model_type == "mult_mlp":
         model = TransferMLP(
-            hidden_sizes=[hidden_sizes],
+            hidden_sizes=[hidden_sizes] * config.n_views,
             dropout=dropout,
             hidden_dim=hidden_dim_base,
         )
     elif config.model_type == "mult_vae":
         model = TransferVAE(
-            hidden_sizes=[hidden_sizes],
+            hidden_sizes=[hidden_sizes] * config.n_views,
             dropout=dropout,
             hidden_dim=hidden_dim_base,
             z_dim=z_dim_base,
+            var_beta=config.hyperparams.get("var_beta", 0.01),
         )
     else:
         logger.error("Unknown model type: %s", config.model_type)
@@ -284,11 +298,11 @@ def evaluate_model(
     DataFrame with a single row containing evaluation results
 
     """
-    predictions = model.__getattribute__(model_id).predict([data.features])
+    predictions = model.__getattribute__(model_id).predict(data.views)
 
     if is_classification:
         predictions = pd.Series(predictions)
-        predictions_probs = model.__getattribute__(model_id).predict([data.features], return_probabilities = True)
+        predictions_probs = model.__getattribute__(model_id).predict(data.views, return_probabilities = True)
         if predictions_probs.shape[1] == 2:
             predictions_probs = predictions_probs[:, 1]
 
@@ -357,14 +371,15 @@ def train_model(
     # differ from the source model that was trained first on this same object.
     force_dims = source_model is not None
     try:
-        model.set_model_dims([train_data.features], config.output_dim, force=force_dims)
+        model.set_model_dims(train_data.views, config.output_dim, force=force_dims)
     except Exception:
         logger.exception("Error setting model dimensions")
 
     if source_model:
         model.create_model(model_id, source_model=source_model, device=config.torch_device, lr=lr)
 
-        if model_id == "target" and config.hyperparams.get("freeze") == "marginal" and hasattr(model, "target"):
+        freeze_mode = config.hyperparams.get("freeze", "none")
+        if model_id == "target" and freeze_mode in ("marginal", "encoders") and hasattr(model, "target"):
             target_container = getattr(model, "target")
             target_container.model.freeze_marginal_layers()
     else:
@@ -375,22 +390,23 @@ def train_model(
 
     model.train_model(
         model_id,
-        train_views=[train_data.features],
+        train_views=train_data.views,
         y_train=train_data.response,
         epochs=epochs,
         verbose=True,
-        test_views=[early_stopping_data.features] if early_stopping_data else None,
+        test_views=early_stopping_data.views if early_stopping_data else None,
         y_test=early_stopping_data.response if early_stopping_data else None,
         gamma=float(config.hyperparams.get("gamma", gamma)),
     )
 
 def predict_dl_model(
     pretrained_model: TransferMLP | TransferVAE,
-    features: pd.DataFrame,
+    features: list[pd.DataFrame] | pd.DataFrame,
     model_id: str = "target",
     return_probabilities = False
 ):
-    return pretrained_model.__getattribute__(model_id).predict([features], return_probabilities=return_probabilities)
+    views = features if isinstance(features, list) else [features]
+    return pretrained_model.__getattribute__(model_id).predict(views, return_probabilities=return_probabilities)
 
 def create_cv_folds(
     feature_matrix: pd.DataFrame,
@@ -520,6 +536,7 @@ def select_best_parameters(
 def _create_loo_folds(
     feature_matrix: pd.DataFrame,
     response_values: pd.Series,
+    view_column_groups: dict[str, list[str]] | None = None,
 ) -> list[CVFoldData]:
     cv_splitter = LeaveOneOut()
     all_folds = list(cv_splitter.split(feature_matrix, response_values))
@@ -541,9 +558,9 @@ def _create_loo_folds(
         early_stop_response = response_values.iloc[early_stop_indices]
 
         fold_data = CVFoldData(
-            train=DataPartition(features=train_features, response=train_response),
-            validation=DataPartition(features=val_features, response=val_response),
-            early_stopping=DataPartition(features=early_stop_features, response=early_stop_response),
+            train=DataPartition(features=train_features, response=train_response, view_column_groups=view_column_groups),
+            validation=DataPartition(features=val_features, response=val_response, view_column_groups=view_column_groups),
+            early_stopping=DataPartition(features=early_stop_features, response=early_stop_response, view_column_groups=view_column_groups),
             fold_idx=val_fold_idx,
         )
 
@@ -556,6 +573,7 @@ def _create_kfold_folds(
     feature_matrix: pd.DataFrame,
     response_values: pd.Series,
     cv_splitter: KFold | StratifiedKFold,
+    view_column_groups: dict[str, list[str]] | None = None,
 ) -> list[CVFoldData]:
     all_folds = list(cv_splitter.split(feature_matrix, response_values))
     n_actual_splits = len(all_folds)
@@ -585,9 +603,9 @@ def _create_kfold_folds(
         early_stop_response = response_values.iloc[early_stop_indices]
 
         fold_data = CVFoldData(
-            train=DataPartition(features=train_features, response=train_response),
-            validation=DataPartition(features=val_features, response=val_response),
-            early_stopping=DataPartition(features=early_stop_features, response=early_stop_response),
+            train=DataPartition(features=train_features, response=train_response, view_column_groups=view_column_groups),
+            validation=DataPartition(features=val_features, response=val_response, view_column_groups=view_column_groups),
+            early_stopping=DataPartition(features=early_stop_features, response=early_stop_response, view_column_groups=view_column_groups),
             fold_idx=val_fold_idx,
         )
 
@@ -600,6 +618,7 @@ def create_k_minus_2_cv_folds(
     feature_matrix: pd.DataFrame,
     response_values: pd.Series,
     n_splits: int,
+    view_column_groups: dict[str, list[str]] | None = None,
 ) -> list[CVFoldData]:
     if n_splits < 3:
         logger.warning("n_splits must be at least 3 for k-2 fold CV, setting to 3")
@@ -609,29 +628,29 @@ def create_k_minus_2_cv_folds(
     n_samples = feature_matrix.shape[0]
 
     if n_samples < n_splits:
-        cv_folds = _create_loo_folds(feature_matrix, response_values)
+        cv_folds = _create_loo_folds(feature_matrix, response_values, view_column_groups)
     elif is_classification:
         class_counts = response_values.value_counts()
         min_class_count = class_counts.min()
         if min_class_count < n_splits:
             logger.info("Insufficient samples for stratification, using Leave-One-Out cross-validation")
-            cv_folds = _create_loo_folds(feature_matrix, response_values)
+            cv_folds = _create_loo_folds(feature_matrix, response_values, view_column_groups)
         else:
             logger.info("Using stratified %s-fold cross-validation for k-2 CV", n_splits)
             cv_splitter = StratifiedKFold(n_splits=n_splits, shuffle=True, random_state=42)
-            cv_folds = _create_kfold_folds(feature_matrix, response_values, cv_splitter)
+            cv_folds = _create_kfold_folds(feature_matrix, response_values, cv_splitter, view_column_groups)
     else:
         logger.info("Using regular %s-fold cross-validation for k-2 CV", n_splits)
         cv_splitter = KFold(n_splits=n_splits, shuffle=True, random_state=42)
-        cv_folds = _create_kfold_folds(feature_matrix, response_values, cv_splitter)
+        cv_folds = _create_kfold_folds(feature_matrix, response_values, cv_splitter, view_column_groups)
 
     if not cv_folds:
         # TODO: Maybe there is a better alternative exception
         logger.warning("No valid CV folds could be created, using all data for all partitions")
         fold_data = CVFoldData(
-            train=DataPartition(features=feature_matrix, response=response_values),
-            validation=DataPartition(features=feature_matrix, response=response_values),
-            early_stopping=DataPartition(features=feature_matrix, response=response_values),
+            train=DataPartition(features=feature_matrix, response=response_values, view_column_groups=view_column_groups),
+            validation=DataPartition(features=feature_matrix, response=response_values, view_column_groups=view_column_groups),
+            early_stopping=DataPartition(features=feature_matrix, response=response_values, view_column_groups=view_column_groups),
             fold_idx=0,
         )
         cv_folds.append(fold_data)
@@ -669,7 +688,11 @@ def tune_model_cv(
         logger.warning("Only one class present in the entire dataset, metrics will be undefined")
         return {}
 
-    cv_folds = create_k_minus_2_cv_folds(data_partition.features, data_partition.response, n_splits)
+    n_views = len(data_partition.view_column_groups) if data_partition.view_column_groups else 1
+    cv_folds = create_k_minus_2_cv_folds(
+        data_partition.features, data_partition.response, n_splits,
+        view_column_groups=data_partition.view_column_groups,
+    )
 
     using_loo = any(len(fold.validation.features) == 1 for fold in cv_folds)
 
@@ -696,6 +719,7 @@ def tune_model_cv(
                 is_classification=is_classification,
                 torch_device=torch_device,
                 output_dim=output_dim,
+                n_views=n_views,
             )
 
             model = create_model(config)
@@ -708,11 +732,11 @@ def tune_model_cv(
                 weight_decay=hyperparams.get("weight_decay", 0.01),
             )
 
-            predictions = model.source.predict([fold_data.validation.features])
+            predictions = model.source.predict(fold_data.validation.views)
             predictions = pd.Series(predictions)
 
             if is_classification:
-                predictions_probs = model.source.predict([fold_data.validation.features], return_probabilities = True)
+                predictions_probs = model.source.predict(fold_data.validation.views, return_probabilities = True)
                 if predictions_probs.shape[1] == 2:
                     predictions_probs = predictions_probs[:, 1]
 
@@ -816,7 +840,8 @@ def create_data_partition(
         data: pd.DataFrame,
         feature_cols: list[str],
         response_id: str,
-        row_ids: list | None = None
+        row_ids: list | None = None,
+        view_column_groups: dict[str, list[str]] | None = None,
 ) -> DataPartition:
     """Create a data partition from a DataFrame.
 
@@ -824,6 +849,8 @@ def create_data_partition(
         data: DataFrame containing features and response
         feature_cols: List of feature column names
         row_ids: Optional list of row indices to subset the data. If None, uses all data.
+        view_column_groups: Optional mapping of view name to column list for multi-omics.
+            If None, all feature columns are treated as a single view.
 
     Returns:
         DataPartition object
@@ -834,6 +861,7 @@ def create_data_partition(
     return DataPartition(
         features=subset_data[feature_cols],
         response=subset_data[response_id],
+        view_column_groups=view_column_groups,
     )
 
 
@@ -843,6 +871,7 @@ def fit_dl_model(
     torch_device: device,
     param_grid: dict[str, float | bool | str] | None = None,
     mmd_weight: float | None = None,
+    target_lr: float | None = None,
     **kwargs: float | str,
 ) -> tuple[pd.DataFrame, TransferMLP | TransferVAE | None, TransferMLP | TransferVAE | None]:
     """Fit a deep learning model with optional hyperparameter tuning via cross-validation.
@@ -867,6 +896,8 @@ def fit_dl_model(
 
     response_id = data_container.response_id
     is_classification = data_container.is_classification()
+    view_column_groups = data_container.view_column_groups
+    n_views = len(view_column_groups) if view_column_groups else 1
 
     source_feature_cols = get_feature_columns(data_container.source_data, response_id=response_id)
     target_feature_cols = get_feature_columns(data_container.target_data, response_id=response_id)
@@ -879,6 +910,7 @@ def fit_dl_model(
         feature_cols=source_feature_cols,
         response_id=response_id,
         row_ids=source_train_samples,
+        view_column_groups=view_column_groups,
     )
 
     source_validation_partition = create_data_partition(
@@ -886,6 +918,7 @@ def fit_dl_model(
         feature_cols=source_feature_cols,
         response_id=response_id,
         row_ids=source_validation_samples,
+        view_column_groups=view_column_groups,
     )
 
     # Create target partitions (always use target feature columns)
@@ -895,6 +928,7 @@ def fit_dl_model(
         data=data_container.target_data,
         feature_cols=target_feature_cols,
         response_id=response_id,
+        view_column_groups=view_column_groups,
     )
 
     target_train_partition = create_data_partition(
@@ -902,6 +936,7 @@ def fit_dl_model(
         feature_cols=target_feature_cols,
         response_id=response_id,
         row_ids=target_train_samples,
+        view_column_groups=view_column_groups,
     )
 
     target_validation_partition = create_data_partition(
@@ -909,10 +944,11 @@ def fit_dl_model(
         feature_cols=target_feature_cols,
         response_id=response_id,
         row_ids=target_validation_samples,
+        view_column_groups=view_column_groups,
     )
 
     source_partition: TrainingDict = {"training": source_train_partition, "early_stopping": source_validation_partition}
-    target_partition: TrainingDict = {"training": target_full, "early_stopping": None}
+    target_partition: TrainingDict = {"training": target_train_partition, "early_stopping": target_validation_partition}
     target_partition_nosource: TrainingDict = {"training": target_train_partition, "early_stopping": target_validation_partition}
 
     output_dim = data_container.source_data[response_id].nunique() if is_classification else 1
@@ -920,13 +956,16 @@ def fit_dl_model(
     best_params_nosource: dict = {}
 
     if param_grid is not None:
+        # target_epochs is not tunable via source CV — strip it so it does not
+        # appear to be searched when it is actually ignored during source training.
+        source_param_grid = {k: v for k, v in param_grid.items() if k != "target_epochs"}
         logger.info("Tuning parameters using source data")
         best_params = tune_model_cv(
             data_partition=source_train_partition,
             model_type=model_type,
             output_dim=output_dim,
             torch_device=torch_device,
-            param_grid=param_grid,
+            param_grid=source_param_grid,
         )
 
         if best_params:
@@ -948,6 +987,7 @@ def fit_dl_model(
     # Source + target model
     logger.debug("Training transfer model")
 
+    _source_lr = float(kwargs.get("lr", 1e-4))
     hyperparams = {
         "dropout": kwargs.get("dropout", 0.2),
         "hidden_dim_base": kwargs.get("hidden_dim_base", 12),
@@ -956,9 +996,11 @@ def fit_dl_model(
         "target_epochs": kwargs.get("target_epochs", 1000),
         "freeze": kwargs.get("freeze", "none"),
         "z_dim_base": kwargs.get("z_dim_base", 12),
-        "lr": kwargs.get("lr", 1e-4),
+        "lr": _source_lr,
+        "target_lr": target_lr if target_lr is not None else _source_lr / 10,
         "weight_decay": kwargs.get("weight_decay", 1e-4),
         "gamma": kwargs.get("gamma", 2),
+        "var_beta": kwargs.get("var_beta", 0.01),
     }
     logger.debug("Using hyperparameters: %s", hyperparams)
 
@@ -968,6 +1010,7 @@ def fit_dl_model(
         is_classification=is_classification,
         torch_device=torch_device,
         output_dim=output_dim,
+        n_views=n_views,
     )
     model = create_model(config)
 
@@ -993,7 +1036,7 @@ def fit_dl_model(
         config=config,
         model_id="target",
         source_model="source",
-        lr=float(hyperparams.get("lr", 0.01)),
+        lr=float(hyperparams["target_lr"]),
         gamma=float(hyperparams.get("gamma", 2)),
         weight_decay=float(hyperparams.get("weight_decay", 0.01))
     )
@@ -1021,6 +1064,7 @@ def fit_dl_model(
         is_classification=is_classification,
         torch_device=torch_device,
         output_dim=output_dim,
+        n_views=n_views,
     )
     model_nosource = create_model(config_nosource)
     train_model(
@@ -1043,6 +1087,7 @@ def fit_dl_model(
             data=test_dataset,
             response_id=response_id,
             feature_cols=target_feature_cols,
+            view_column_groups=view_column_groups,
         )
 
         test_context = EvaluationContext(
@@ -1137,6 +1182,8 @@ def fit_rf_model(
     is_classification = data_container.is_classification()
     logger.info(f"Task type: {'Classification' if is_classification else 'Regression'}")
 
+    view_column_groups = data_container.view_column_groups
+
     source_feature_cols = get_feature_columns(data=data_container.source_data, response_id=response_id)
     target_feature_cols = get_feature_columns(data=data_container.target_data, response_id=response_id)
 
@@ -1146,11 +1193,13 @@ def fit_rf_model(
         data=data_container.source_data,
         response_id=response_id,
         feature_cols=source_feature_cols,
+        view_column_groups=view_column_groups,
     )
     target_data = create_data_partition(
         data=data_container.target_data,
         response_id=response_id,
         feature_cols=target_feature_cols,
+        view_column_groups=view_column_groups,
     )
 
     logger.info("Initializing TransferForest model")
@@ -1163,20 +1212,17 @@ def fit_rf_model(
         logger.info("Set model for regression task")
 
     logger.info("Training model on source data")
-    # print("TRAINING")
     transfer_forest.train_models(
-        views=[source_data.features],
+        views=source_data.views,
         response=source_data.response,
     )
 
-    # print("UPDATING")
     logger.info("Updating model with target data")
     transfer_forest.update_models(
-        views=[target_data.features],
+        views=target_data.views,
         response=target_data.response,
     )
 
-    # print("TESTING")
     if hasattr(data_container, "target_test_data") and data_container.target_test_data:
         logger.info(f"Found {len(data_container.target_test_data)} test datasets")
         for i, test_dataset in enumerate(data_container.target_test_data):
@@ -1186,8 +1232,9 @@ def fit_rf_model(
                 data=test_dataset,
                 response_id=response_id,
                 feature_cols=target_feature_cols,
+                view_column_groups=view_column_groups,
             )
-            
+
             ensemble_views = None
             ensemble_response = None
             if data_container.target_ensemble_data is not None:
@@ -1195,18 +1242,16 @@ def fit_rf_model(
                     data_container.target_ensemble_data,
                     response_id=response_id,
                     feature_cols=target_feature_cols,
+                    view_column_groups=view_column_groups,
                 )
 
-                ensemble_views = [ensemble_data.features]
+                ensemble_views = ensemble_data.views
                 ensemble_response = ensemble_data.response
 
-            # print("PREDICT")
-            # print(test_dataset.shape)
-            # print(test_data.features.shape)
             test_predictions = transfer_forest.generate_predictions(
-                views=[test_data.features],
+                views=test_data.views,
                 response=test_data.response,
-                validation_views=[test_data.features],
+                validation_views=test_data.views,
                 validation_response=test_data.response,
                 ensemble_views=ensemble_views,
                 ensemble_response=ensemble_response,
@@ -1265,7 +1310,8 @@ def update_rf_model(
     response_id : str,
     target_data : pd.DataFrame,
     target_test_data : list[pd.DataFrame] | None,
-    target_ensemble_data : pd.DataFrame | None
+    target_ensemble_data : pd.DataFrame | None,
+    view_column_groups: dict[str, list[str]] | None = None,
 ) -> Tuple[pd.DataFrame, TransferForest]:
     is_classification = pretrained_model._prediction_mode == PredictionMode.CLASSIFICATION
     logger.info(f"Task type: {'Classification' if is_classification else 'Regression'}")
@@ -1280,11 +1326,12 @@ def update_rf_model(
         data=target_data,
         response_id=response_id,
         feature_cols=feature_cols,
+        view_column_groups=view_column_groups,
     )
 
     transfer_model = pretrained_model.copy()
 
-    transfer_model.update_models([target_data_update.features], target_data_update.response)
+    transfer_model.update_models(target_data_update.views, target_data_update.response)
 
     if target_test_data is not None:
         logger.info(f"Found {len(target_test_data)} test datasets")
@@ -1295,6 +1342,7 @@ def update_rf_model(
                 data=test_dataset,
                 response_id=response_id,
                 feature_cols=feature_cols,
+                view_column_groups=view_column_groups,
             )
 
             logger.info(f"Test data {i} shape: {test_data.features.shape}")
@@ -1305,19 +1353,17 @@ def update_rf_model(
                 ensemble_data = create_data_partition(
                     target_ensemble_data,
                     response_id=response_id,
-                    feature_cols=feature_cols
+                    feature_cols=feature_cols,
+                    view_column_groups=view_column_groups,
                 )
 
-                ensemble_views = [ensemble_data.features]
+                ensemble_views = ensemble_data.views
                 ensemble_response = ensemble_data.response
 
-            # print("PREDICT")
-            # print(test_dataset.shape)
-            # print(test_data.features.shape)
             test_predictions = transfer_model.generate_predictions(
-                views=[test_data.features],
+                views=test_data.views,
                 response=test_data.response,
-                validation_views=[test_data.features],
+                validation_views=test_data.views,
                 validation_response=test_data.response,
                 ensemble_views=ensemble_views,
                 ensemble_response=ensemble_response,

@@ -1,6 +1,8 @@
 -c requirements.txt
 jupyter
 matplotlib
+seaborn
+scikit-learn
 pre-commit
 tqdm
 pytest

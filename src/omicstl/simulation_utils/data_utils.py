@@ -31,6 +31,7 @@ class DatasetContainer:
         target_test_data: list[pd.DataFrame] | None = None,
         target_ensemble_data: pd.DataFrame | None = None,
         id_tuple: tuple[int, int] | None = None,
+        view_column_groups: dict[str, list[str]] | None = None,
     ) -> None:
         """Initialize with source and target data.
 
@@ -40,13 +41,17 @@ class DatasetContainer:
             response_id: A string indicating the response column in both source, and target datasets.
             target_test_data: Optional list of DataFrames containing target domain test data
             id_tuple: Optional tuple of (first_id, last_id) identifying this dataset. Used for simulated data.
+            view_column_groups: Optional mapping of view name to column list for multi-omics.
+                If None, all feature columns are treated as a single view.
+                Example: {"proteomics": ["prot1", "prot2"], "metabolomics": ["met1", "met2"]}
 
         """
         self.source_data = source_data
         self.target_data = target_data
         self.target_test_data = target_test_data if target_test_data is not None else []
         self.target_ensemble_data = target_ensemble_data
-        self.id_tuple = id_tuple if id_tuple else None
+        self.id_tuple = id_tuple if id_tuple else (None, None)
+        self.view_column_groups = view_column_groups
         self.response_id: str
 
         self.source_train_data: pd.DataFrame | None = None
