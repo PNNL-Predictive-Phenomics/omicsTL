@@ -378,7 +378,8 @@ def train_model(
     if source_model:
         model.create_model(model_id, source_model=source_model, device=config.torch_device, lr=lr)
 
-        if model_id == "target" and config.hyperparams.get("freeze") == "marginal" and hasattr(model, "target"):
+        freeze_mode = config.hyperparams.get("freeze", "none")
+        if model_id == "target" and freeze_mode in ("marginal", "encoders") and hasattr(model, "target"):
             target_container = getattr(model, "target")
             target_container.model.freeze_marginal_layers()
     else:
@@ -870,6 +871,7 @@ def fit_dl_model(
     torch_device: device,
     param_grid: dict[str, float | bool | str] | None = None,
     mmd_weight: float | None = None,
+    target_lr: float | None = None,
     **kwargs: float | str,
 ) -> tuple[pd.DataFrame, TransferMLP | TransferVAE | None, TransferMLP | TransferVAE | None]:
     """Fit a deep learning model with optional hyperparameter tuning via cross-validation.
@@ -954,13 +956,16 @@ def fit_dl_model(
     best_params_nosource: dict = {}
 
     if param_grid is not None:
+        # target_epochs is not tunable via source CV — strip it so it does not
+        # appear to be searched when it is actually ignored during source training.
+        source_param_grid = {k: v for k, v in param_grid.items() if k != "target_epochs"}
         logger.info("Tuning parameters using source data")
         best_params = tune_model_cv(
             data_partition=source_train_partition,
             model_type=model_type,
             output_dim=output_dim,
             torch_device=torch_device,
-            param_grid=param_grid,
+            param_grid=source_param_grid,
         )
 
         if best_params:
@@ -982,6 +987,7 @@ def fit_dl_model(
     # Source + target model
     logger.debug("Training transfer model")
 
+    _source_lr = float(kwargs.get("lr", 1e-4))
     hyperparams = {
         "dropout": kwargs.get("dropout", 0.2),
         "hidden_dim_base": kwargs.get("hidden_dim_base", 12),
@@ -990,7 +996,8 @@ def fit_dl_model(
         "target_epochs": kwargs.get("target_epochs", 1000),
         "freeze": kwargs.get("freeze", "none"),
         "z_dim_base": kwargs.get("z_dim_base", 12),
-        "lr": kwargs.get("lr", 1e-4),
+        "lr": _source_lr,
+        "target_lr": target_lr if target_lr is not None else _source_lr / 10,
         "weight_decay": kwargs.get("weight_decay", 1e-4),
         "gamma": kwargs.get("gamma", 2),
         "var_beta": kwargs.get("var_beta", 0.01),
@@ -1029,7 +1036,7 @@ def fit_dl_model(
         config=config,
         model_id="target",
         source_model="source",
-        lr=float(hyperparams.get("lr", 0.01)),
+        lr=float(hyperparams["target_lr"]),
         gamma=float(hyperparams.get("gamma", 2)),
         weight_decay=float(hyperparams.get("weight_decay", 0.01))
     )
