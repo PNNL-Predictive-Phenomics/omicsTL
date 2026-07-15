@@ -997,7 +997,11 @@ def fit_dl_model(
         "freeze": kwargs.get("freeze", "none"),
         "z_dim_base": kwargs.get("z_dim_base", 12),
         "lr": _source_lr,
-        "target_lr": target_lr if target_lr is not None else _source_lr / 10,
+        # Use full lr for target fine-tuning by default. lr/10 prevents catastrophic
+        # forgetting when source and target are close, but causes stalling when the
+        # domain shift is large (separate PCA spaces) and source pre-training has
+        # already pushed weights into a source-specific basin.
+        "target_lr": target_lr if target_lr is not None else _source_lr,
         "weight_decay": kwargs.get("weight_decay", 1e-4),
         "gamma": kwargs.get("gamma", 2),
         "var_beta": kwargs.get("var_beta", 0.01),
@@ -1049,7 +1053,10 @@ def fit_dl_model(
         "hidden_dim_base": best_params_nosource.get("hidden_dim_base", 12),
         "n_latent_dims": best_params_nosource.get("n_latent_dims", 2),
         "source_epochs": best_params_nosource.get("source_epochs", 1000),
-        "target_epochs": best_params_nosource.get("target_epochs", 1000),
+        # train_model picks epochs via "target_epochs" when model_id contains "target"
+        # (which it does for "target_nosource"). Map the CV-tuned source_epochs here
+        # so the no-source model actually uses the epoch count found by CV.
+        "target_epochs": best_params_nosource.get("source_epochs", 1000),
         "freeze": best_params_nosource.get("freeze", "none"),
         "z_dim_base": best_params_nosource.get("z_dim_base", 12),
         "lr": best_params_nosource.get("lr", 1e-4),

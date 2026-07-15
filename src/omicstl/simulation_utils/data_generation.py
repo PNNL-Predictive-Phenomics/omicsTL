@@ -3,7 +3,9 @@ import typing
 import rpy2.robjects as ro
 from rpy2.robjects import pandas2ri
 from rpy2.rinterface_lib.sexp import NULLType
+import numpy as np
 import pandas as pd
+from sklearn.decomposition import PCA
 from .._defs import _PKG_ROOT
 from ..r_utils import df2pd, pd2df
 
@@ -96,6 +98,7 @@ def generate_synth_data_pca(
     n_output_features: int | None = None,
     n_components: int | None = None,
     regularization: float = 1e-6,
+    snr: float | None = None,
 ) -> tuple[pd.DataFrame, pd.DataFrame]:
     """Generate paired synthetic source and target data via PCA-based simulation.
 
@@ -114,6 +117,9 @@ def generate_synth_data_pca(
         n_components: PCA components to retain.  Defaults to min(n_source-1, p).
         regularization: Ridge term added to PC-space covariance for
             positive-definiteness.  Default 1e-6.
+        snr: Signal-to-noise ratio.  If provided, additive Gaussian noise is
+            injected into each feature so that noise_var_j = signal_var_j / snr.
+            None (default) adds no extra noise.
 
     Returns:
         (synth_source, synth_target) feature-only DataFrames.
@@ -139,11 +145,100 @@ def generate_synth_data_pca(
         kwargs["n_output_features"] = int(n_output_features)
     if n_components is not None:
         kwargs["n_components"] = int(n_components)
+    if snr is not None:
+        kwargs["snr"] = float(snr)
 
     result = ro.r["dat_generator_pca"](**kwargs)
     synth_source = pd.DataFrame(df2pd(result.rx2("synth_source")))
     synth_target = pd.DataFrame(df2pd(result.rx2("synth_target")))
     return synth_source, synth_target
+
+
+def _pca_response_scores(scores: np.ndarray, complexity: str, index) -> pd.Series:
+    z1, z2, z3 = scores[:, 0], scores[:, 1], scores[:, 2]
+    z4 = scores[:, 3] if scores.shape[1] >= 4 else np.zeros(scores.shape[0])
+    if complexity == "nonlinear":
+        return pd.Series(
+            np.tanh(z1) + z1 * z2 ** 2 + np.sin(z2) * z3 + z3 * z4,
+            index=index,
+        )
+    return pd.Series(z1 + z1 * z2 + z2 * z3 + z3 * z4, index=index)
+
+
+def _add_response(
+    features: pd.DataFrame,
+    raw: pd.Series,
+    is_categorical: bool,
+    threshold: float | None = None,
+    snr: float | None = None,
+) -> tuple[pd.DataFrame, float | None]:
+    if snr is not None:
+        signal_var = float(np.var(raw.values))
+        noise_sd = np.sqrt(signal_var / snr) if signal_var > 0 else 0.0
+        raw = raw + np.random.normal(0, noise_sd, size=len(raw))
+    if is_categorical:
+        thresh = float(raw.quantile(0.5)) if threshold is None else threshold
+        response = (raw >= thresh).astype(np.int64)
+    else:
+        response = raw
+        thresh = None
+    df = features.copy()
+    df.insert(0, "response", response.values)
+    return df, thresh
+
+
+def generate_pca_response(
+    source_features: pd.DataFrame,
+    target_features: pd.DataFrame,
+    complexity: str,
+    is_categorical: bool = False,
+    snr: float | None = None,
+    variance_threshold: float = 0.80,
+    min_components: int = 3,
+) -> tuple[pd.DataFrame, pd.DataFrame, float | None]:
+    """Generate response variables for source and target datasets using PCA scores.
+
+    Fits PCA on source features and projects both domains onto the source PC space,
+    then applies a response formula to the scores.  The response is related to all
+    original features through the PCA loadings, mirroring the old LC-mixing approach
+    where each synthetic feature was a linear combination of all real features.
+
+    The categorical threshold is derived from source and applied to target so both
+    domains share the same decision boundary.  SNR noise is injected on the response
+    (y = f(scores) + eps) after the formula, before thresholding for categorical.
+
+    Args:
+        source_features: Feature-only DataFrame for the source domain.
+        target_features: Feature-only DataFrame for the target domain.
+        complexity: "linear" or "nonlinear" response formula.
+        is_categorical: If True, binarise response at the source median. Default False.
+        snr: Signal-to-noise ratio applied to the response. None adds no noise.
+        variance_threshold: Proportion of source variance the selected PCs must
+            explain. Default 0.80.
+        min_components: Minimum number of PCs to retain. Default 3.
+
+    Returns:
+        (source_with_response, target_with_response, threshold) where threshold
+        is the categorical split point derived from source, or None for continuous.
+    """
+    cumvar = np.cumsum(PCA().fit(source_features).explained_variance_ratio_)
+    K = min(
+        max(int(np.searchsorted(cumvar, variance_threshold)) + 1, min_components),
+        4,                           # formula uses at most z1..z4
+        source_features.shape[1],
+    )
+    pca_resp = PCA(n_components=K).fit(source_features)
+
+    src_scores = pca_resp.transform(source_features)
+    tgt_scores = pca_resp.transform(target_features)
+
+    src_raw = _pca_response_scores(src_scores, complexity, source_features.index)
+    tgt_raw = _pca_response_scores(tgt_scores, complexity, target_features.index)
+
+    source_df, threshold = _add_response(source_features, src_raw, is_categorical, snr=snr)
+    target_df, _         = _add_response(target_features, tgt_raw, is_categorical,
+                                          threshold=threshold, snr=snr)
+    return source_df, target_df, threshold
 
 
 def generate_synth_data_multiomics_pca(

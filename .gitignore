@@ -5,6 +5,8 @@
 !.gitkeep
 
 /data/
+simulation_study_updated/test_results/
+simulation_study_updated/local_test_run.py
 
 ##########################
 # Common files
