@@ -96,6 +96,7 @@ def generate_synth_data_pca(
     n_output_features: int | None = None,
     n_components: int | None = None,
     regularization: float = 1e-6,
+    snr: float | None = None,
 ) -> tuple[pd.DataFrame, pd.DataFrame]:
     """Generate paired synthetic source and target data via PCA-based simulation.
 
@@ -114,6 +115,9 @@ def generate_synth_data_pca(
         n_components: PCA components to retain.  Defaults to min(n_source-1, p).
         regularization: Ridge term added to PC-space covariance for
             positive-definiteness.  Default 1e-6.
+        snr: Signal-to-noise ratio.  If provided, additive Gaussian noise is
+            injected into each feature so that noise_var_j = signal_var_j / snr.
+            None (default) adds no extra noise.
 
     Returns:
         (synth_source, synth_target) feature-only DataFrames.
@@ -139,6 +143,8 @@ def generate_synth_data_pca(
         kwargs["n_output_features"] = int(n_output_features)
     if n_components is not None:
         kwargs["n_components"] = int(n_components)
+    if snr is not None:
+        kwargs["snr"] = float(snr)
 
     result = ro.r["dat_generator_pca"](**kwargs)
     synth_source = pd.DataFrame(df2pd(result.rx2("synth_source")))

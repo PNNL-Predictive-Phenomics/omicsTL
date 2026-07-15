@@ -1067,7 +1067,8 @@ dat_generator_pca <- function(
   n_output_samps_target,
   n_components      = NULL,
   regularization    = 1e-6,
-  n_output_features = NULL
+  n_output_features = NULL,
+  snr               = NULL
 ) {
 
   # ── 0. Align feature sets ──────────────────────────────────────────────────
@@ -1245,6 +1246,20 @@ dat_generator_pca <- function(
       colnames(synth_target) <- paste0("synthpred_", seq_len(n_output_features))
       lc_weights <- W
     }
+  }
+
+  # ── 9. Optional SNR noise injection ──────────────────────────────────────
+  # Adds zero-mean Gaussian noise so that noise_var_j = signal_var_j / snr
+  # for each feature j, giving the target SNR per feature. snr = NULL skips.
+  if (!is.null(snr) && is.finite(snr) && snr > 0) {
+    inject_snr_noise <- function(mat, snr_val) {
+      feat_var <- pmax(apply(mat, 2, var), 0)
+      noise_sd <- sqrt(feat_var / snr_val)
+      noise_mat <- matrix(rnorm(nrow(mat) * ncol(mat)), nrow = nrow(mat))
+      mat + sweep(noise_mat, 2, noise_sd, "*")
+    }
+    synth_source <- inject_snr_noise(synth_source, snr)
+    synth_target <- inject_snr_noise(synth_target, snr)
   }
 
   list(
