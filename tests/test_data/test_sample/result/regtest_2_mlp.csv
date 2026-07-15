@@ -1,3 +1,3 @@
-split,model,model_type,model_id,rmse,mae,acc,f1,mcc,precision,recall,roc_auc,dropout,hidden_dim_base,n_latent_dims,source_epochs,target_epochs,freeze,z_dim_base,lr,weight_decay,gamma
-test_0,mult_mlp,mult_mlp,target,3.6835895144619406,3.355256218442033,,,,,,,0.3,12.0,2.0,5.0,5.0,none,12.0,0.0001,0.0001,2.0
-test_0,mult_mlp,mult_mlp,target_nosource,2.2124266676432804,1.8257629979286272,,,,,,,0.3,12.0,2.0,5.0,5.0,none,12.0,0.0001,0.0001,2.0
+split,model,model_type,model_id,rmse,mae,acc,f1,mcc,precision,recall,roc_auc,dropout,hidden_dim_base,n_latent_dims,source_epochs,target_epochs,freeze,z_dim_base,lr,target_lr,weight_decay,gamma,var_beta
+test_0,mult_mlp,mult_mlp,target,3.70606834875311,3.3795460171786056,,,,,,,0.3,12.0,2.0,5.0,1000.0,none,12.0,0.0001,0.0001,0.0001,2.0,0.01
+test_0,mult_mlp,mult_mlp,target_nosource,2.6858195739292294,2.322254383468549,,,,,,,0.3,12.0,2.0,5.0,5.0,none,12.0,0.0001,,0.0001,2.0,
