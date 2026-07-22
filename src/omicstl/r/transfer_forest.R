@@ -7,6 +7,14 @@ source(here::here("src", "omicstl", "r", "requirements.R"))
 
 RANDOMFOREST_NTREE <- 500
 
+# Returns per-class sampsize vector for classification (minority class count repeated
+# once per level). Returns NULL for regression so randomForest uses its default.
+# Used by tryCatch retry blocks to recover from bootstrap sampling failures on
+# small datasets where the default sampsize causes sample.int(0, ...) errors.
+.rf_sampsize <- function(y) {
+  if (is.factor(y)) rep(as.integer(min(table(y))), nlevels(y)) else NULL
+}
+
 #' Train an m0 target only model
 #'
 #' @param y the target response data
@@ -16,10 +24,12 @@ train_m0 <- function(
   y,
   x
 ) {
-  res_0 <- randomForest::randomForest(
-    y = y,
-    x = x,
-    ntree = RANDOMFOREST_NTREE
+  res_0 <- tryCatch(
+    randomForest::randomForest(y=y, x=x, ntree=RANDOMFOREST_NTREE),
+    error = function(e) {
+      randomForest::randomForest(y=y, x=x, ntree=RANDOMFOREST_NTREE,
+                                 sampsize=.rf_sampsize(y))
+    }
   )
 
   return(res_0)
@@ -38,14 +48,15 @@ train_m1 <- function(
 ) {
   var_importance_source <- importancenew(rf_source, 2)
 
-  res_1 <- viRandomForests::viRandomForests(  
-    y = y,
-    x = x,
-    fprob = var_importance_source,
-    ntree = RANDOMFOREST_NTREE,
-    keep.forest = TRUE,
-    importance = TRUE
-  ) 
+  res_1 <- tryCatch(
+    viRandomForests::viRandomForests(y=y, x=x, fprob=var_importance_source,
+                                     ntree=RANDOMFOREST_NTREE, keep.forest=TRUE, importance=TRUE),
+    error = function(e) {
+      viRandomForests::viRandomForests(y=y, x=x, fprob=var_importance_source,
+                                       ntree=RANDOMFOREST_NTREE, keep.forest=TRUE, importance=TRUE,
+                                       sampsize=.rf_sampsize(y))
+    }
+  )
 
   return(res_1)
 }
@@ -63,7 +74,7 @@ train_m2 <- function(
   rf_source
 ) {
   pred_type <- ifelse(rf_source$type == "classification", "prob", "response")
-  
+
   if (pred_type == "prob") {
     # Get probabilities per class
     y_res <- predict(rf_source, newdata = x, type=pred_type)
@@ -85,13 +96,13 @@ train_m2 <- function(
     return(res_deltas)
   } else {
     y_delta <- y - predict(rf_source, newdata = x, type=pred_type)
-    
+
     res_2 <- randomForest::randomForest(
       y = y_delta,
       x = x,
       ntree = RANDOMFOREST_NTREE
     )
-    
+
     return(res_2)
   }
 }
@@ -115,13 +126,17 @@ train_m3 <- function(
 
   if(rf_source$type == "classification"){
 
-    res_3 <- viRandomForests::viRandomForests(
-    y = y,
-    x = cbind(x, y_source_hat = y_source_hat),
-    fprob= c(rep(1, num_features), rep(2, ncol(y_source_hat))),
-    ntree = 500,
-    keep.forest = TRUE,
-    importance = TRUE)
+    res_3 <- tryCatch(
+      viRandomForests::viRandomForests(y=y, x=cbind(x, y_source_hat=y_source_hat),
+                                       fprob=c(rep(1, num_features), rep(2, ncol(y_source_hat))),
+                                       ntree=500, keep.forest=TRUE, importance=TRUE),
+      error = function(e) {
+        viRandomForests::viRandomForests(y=y, x=cbind(x, y_source_hat=y_source_hat),
+                                         fprob=c(rep(1, num_features), rep(2, ncol(y_source_hat))),
+                                         ntree=500, keep.forest=TRUE, importance=TRUE,
+                                         sampsize=.rf_sampsize(y))
+      }
+    )
 
   } else{
 
@@ -134,7 +149,7 @@ train_m3 <- function(
     importance = TRUE)
 
   }
-  
+
 
   return(res_3)
 }
@@ -155,13 +170,13 @@ train_trans_rf <- function(
 
   # Target only model
   out[["m0"]] <- train_m0(y, x)
-  
+
   # Variable importance transfer learning model
   out[["m1"]] <- train_m1(y, x, rf_source)
 
   # Error-based transfer learning model
   out[["m2"]] <- train_m2(y, x, rf_source)
-  
+
   # Prediction-based transfer learning model
   out[["m3"]] <- train_m3(y, x, rf_source)
 
@@ -233,7 +248,7 @@ predict_m2 <- function(
     # Predict error deltas for each class
     num_classes <- length(models[['m_source']]$classes)
     num_samples <- dim(newdata)[1]
-    
+
     pred_2_unnorm <- list()
     for (i in seq_len(num_classes)) {
       pred_2_deltas <- predict(models[['m2']][[i]], newdata = newdata, pred_type = pred_type)
@@ -263,7 +278,7 @@ predict_m2 <- function(
 }
 
 #' Predict data using source prediction injected transfer learning
-#' 
+#'
 #' @param models list of models returned by train_trans_rf
 #' @param newdata a dataframe containing the new data to predict on
 #' @param pred_type "prob" for categorical response or "response" for continuous response
@@ -481,7 +496,7 @@ predict_trans_rf = function(
   # Need to specify colnames here since predict_m2() does not
   # automatically assign them.
   colnames(pred_2) <- colnames(pred_1)
-  
+
   if (!is.null(x_val)) {
     colnames(pred_2_val) <- colnames(pred_1_val)
   }
@@ -560,7 +575,7 @@ predict_trans_rf = function(
     }
 
   }
-  
+
   out <- NULL
   if(pred_type == "prob") {
     pred_source_pred_class <- colnames(pred_source)[apply(pred_source, 1, randomize_equal_response)]
@@ -581,7 +596,7 @@ predict_trans_rf = function(
     pred_ensemble_pred_class <- colnames(pred_ensemble)[unlist(apply(pred_ensemble, 1, randomize_equal_response))]
     pred_ensemble_max_prob <- pred_ensemble
     colnames(pred_ensemble_max_prob) <- paste0("pred_ensemble_prob_", colnames(pred_ensemble_max_prob))
-    
+
     if (!is.null(x_val)) {
       pred_source_val_pred_class <- colnames(pred_source_val)[apply(pred_source_val, 1, randomize_equal_response)]
       pred_source_val_max_prob <- pred_source_val
@@ -645,7 +660,7 @@ predict_trans_rf = function(
         pred_ensemble_max_prob
       )
     }
-    
+
     #pred_ensemble_max_prob[pred_ensemble_max_prob == 1.0] <- 0.9999
   } else {
     if (!is.null(x_val)) {
