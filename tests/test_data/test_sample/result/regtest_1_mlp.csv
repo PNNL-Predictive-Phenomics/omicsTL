@@ -1,3 +1,3 @@
 split,model,model_type,model_id,rmse,mae,acc,f1,mcc,precision,recall,roc_auc,dropout,hidden_dim_base,n_latent_dims,source_epochs,target_epochs,freeze,z_dim_base,lr,target_lr,weight_decay,gamma,var_beta
-test_0,mult_mlp,mult_mlp,target,0.3314942181298402,0.26938974692217543,,,,,,,0.3,12.0,2.0,5.0,1000.0,none,12.0,0.0001,0.0001,0.0001,2.0,0.01
-test_0,mult_mlp,mult_mlp,target_nosource,0.39924386039393933,0.3441267219047097,,,,,,,0.3,12.0,2.0,5.0,5.0,none,12.0,0.0001,,0.0001,2.0,
+test_0,mult_mlp,mult_mlp,target,0.4754280593040865,0.40562567052846715,,,,,,,0.3,12.0,2.0,5.0,1000.0,none,12.0,0.0001,0.0001,0.0001,2.0,0.01
+test_0,mult_mlp,mult_mlp,target_nosource,0.3396850028309917,0.28283814356850423,,,,,,,0.3,12.0,2.0,5.0,5.0,none,12.0,0.0001,,0.0001,2.0,

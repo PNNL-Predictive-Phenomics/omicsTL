@@ -130,8 +130,10 @@ class ModelObject:
             if y_test is None or test_views is None:
                 continue
 
+            self.model.eval()
             with torch.inference_mode():
                 yhat_test, _, _, _ = self.model(test_tensors)
+            self.model.train()
 
             current_metric = None
             improved = False

@@ -6,6 +6,7 @@ from rpy2.rinterface_lib.sexp import NULLType
 import numpy as np
 import pandas as pd
 from sklearn.decomposition import PCA
+from scipy.special import expit
 from .._defs import _PKG_ROOT
 from ..r_utils import df2pd, pd2df
 
@@ -97,94 +98,163 @@ def generate_synth_data_pca(
     n_output_samps_target: int,
     n_output_features: int | None = None,
     n_components: int | None = None,
-    regularization: float = 1e-6,
+    n_active_components: int = 4,
+    pc_selection: str = "activity",
+    alpha: float = 1.0,
+    regularization: float = 1e-3,
     snr: float | None = None,
-) -> tuple[pd.DataFrame, pd.DataFrame]:
-    """Generate paired synthetic source and target data via PCA-based simulation.
+    random_state: int | None = None,
+) -> tuple[pd.DataFrame, pd.DataFrame, np.ndarray, np.ndarray]:
+    """Generate paired synthetic source and target data via Gaussian PCA simulation.
 
-    Both domains are simulated together using a shared joint PCA so their
-    correlation structures are comparable.  Unlike generate_synth_data, no
-    response column is added; the returned DataFrames contain features only.
+    Fits a shared PCA basis on the real source, projects both real domains
+    into that basis, estimates a Gaussian score distribution per domain, then
+    samples from an alpha-interpolated target distribution.
+
+    alpha=0 targets the same distribution as source (no domain shift);
+    alpha=1 targets the full observed domain shift.
 
     Args:
         source_data: Feature-only DataFrame for the source domain.
         target_data: Feature-only DataFrame for the target domain.
         n_output_samps_source: Number of synthetic source samples to generate.
         n_output_samps_target: Number of synthetic target samples to generate.
-        n_output_features: Number of output features.  If None all p common
-            features are returned.  If <= p a random subset is returned with
-            exact statistics preserved.  If > p structured LC mixing is used.
-        n_components: PCA components to retain.  Defaults to min(n_source-1, p).
-        regularization: Ridge term added to PC-space covariance for
-            positive-definiteness.  Default 1e-6.
-        snr: Signal-to-noise ratio.  If provided, additive Gaussian noise is
-            injected into each feature so that noise_var_j = signal_var_j / snr.
-            None (default) adds no extra noise.
+        n_output_features: Unused; kept for signature compatibility. Must be None.
+        n_components: Total PCA components to fit. Defaults to min(n_src-1, p).
+        n_active_components: Number of PCs to sample from and return as scores
+            (K_active). Default 4.
+        pc_selection: How to choose the K_active PCs.
+            "variance" — first K by source variance explained (standard PCA order).
+            "activity" — K PCs ranked by source_var / (1 + normalised_shift²),
+                         deprioritising components dominated by domain shift.
+            Default "activity".
+        alpha: Domain-shift interpolation in [0, 1]. 0 = same as source;
+            1 = full observed target shift. Default 1.0.
+        regularization: Ridge term added to PC-score covariance matrices for
+            positive-definiteness. Default 1e-3.
+        snr: Feature-level signal-to-noise ratio. If provided, per-feature
+            Gaussian noise is injected so that noise_var_j = signal_var_j / snr.
+            None (default) adds no noise.
+        random_state: Seed for numpy RNG. Default None.
 
     Returns:
-        (synth_source, synth_target) feature-only DataFrames.
+        (synth_source, synth_target, source_scores_syn, target_scores_syn) where
+        source_scores_syn and target_scores_syn are K_active-dimensional sampled
+        PC score arrays. Pass directly to generate_pca_response.
     """
-    ro.r["Sys.setenv"](OMICSTL_PKG_ROOT=_PKG_ROOT())
-    ro.r["source"](os.path.join(_PKG_ROOT(), "r", "requirements.R"))
-    ro.r["source"](os.path.join(_PKG_ROOT(), "r", "data_simulation_utils.R"))
-
-    # Keep only numeric columns before passing to R; non-numeric columns
-    # (object/category dtype from CSV row-labels, protein IDs, etc.) become
-    # character vectors in R and cause colMeans / svd to fail.
-    source_data = source_data.select_dtypes(include="number")
-    target_data = target_data.select_dtypes(include="number")
-
-    kwargs: dict = dict(
-        source_data=pd2df(source_data),
-        target_data=pd2df(target_data),
-        n_output_samps_source=int(n_output_samps_source),
-        n_output_samps_target=int(n_output_samps_target),
-        regularization=float(regularization),
-    )
+    if pc_selection not in ("variance", "activity"):
+        raise ValueError(f"pc_selection must be 'variance' or 'activity', got {pc_selection!r}")
     if n_output_features is not None:
-        kwargs["n_output_features"] = int(n_output_features)
-    if n_components is not None:
-        kwargs["n_components"] = int(n_components)
-    if snr is not None:
-        kwargs["snr"] = float(snr)
+        raise NotImplementedError(
+            "n_output_features is not supported; pass None to keep all common features."
+        )
 
-    result = ro.r["dat_generator_pca"](**kwargs)
-    synth_source = pd.DataFrame(df2pd(result.rx2("synth_source")))
-    synth_target = pd.DataFrame(df2pd(result.rx2("synth_target")))
-    return synth_source, synth_target
+    rng = np.random.default_rng(random_state)
+
+    src_num = source_data.select_dtypes(include="number")
+    tgt_num = target_data.select_dtypes(include="number")
+    common_cols = src_num.columns.intersection(tgt_num.columns).tolist()
+    src_arr = src_num[common_cols].values.astype(float)
+    tgt_arr = tgt_num[common_cols].values.astype(float)
+    n_src, p = src_arr.shape
+
+    feat_mean = src_arr.mean(axis=0)
+    feat_sd = src_arr.std(axis=0, ddof=1)
+    feat_sd[feat_sd < 1e-10] = 1.0
+    src_scaled = (src_arr - feat_mean) / feat_sd
+    tgt_scaled = (tgt_arr - feat_mean) / feat_sd
+
+    max_comp = min(n_src - 1, p)
+    n_comp = max_comp if n_components is None else min(int(n_components), max_comp)
+    pca = PCA(n_components=n_comp).fit(src_scaled)
+    V = pca.components_.T   # (p, n_comp)
+
+    Z_src = pca.transform(src_scaled)            # (n_src, n_comp)
+    Z_tgt = (tgt_scaled - pca.mean_) @ V        # (n_tgt, n_comp)
+
+    K = min(n_active_components, n_comp)
+
+    if pc_selection == "variance":
+        active_idx = np.arange(K)   # first K by source variance (standard PCA order)
+    else:
+        # "activity": rank by source_var / (1 + normalised_shift²) so components
+        # dominated by between-domain mean difference score lower.
+        var_S_full    = Z_src.var(axis=0, ddof=1).clip(min=1e-10)
+        shift_sq_full = (Z_tgt.mean(axis=0) - Z_src.mean(axis=0)) ** 2
+        activity_score = var_S_full / (1.0 + shift_sq_full / var_S_full)
+        active_idx = np.argsort(activity_score)[::-1][:K]
+
+    Z_src_k = Z_src[:, active_idx]
+    Z_tgt_k = Z_tgt[:, active_idx]
+
+    mu_S = Z_src_k.mean(axis=0)
+    mu_T = Z_tgt_k.mean(axis=0)
+    Sigma_S = np.atleast_2d(np.cov(Z_src_k, rowvar=False, ddof=1)) + regularization * np.eye(K)
+    Sigma_T = np.atleast_2d(np.cov(Z_tgt_k, rowvar=False, ddof=1)) + regularization * np.eye(K)
+
+    mu_T_alpha    = (1.0 - alpha) * mu_S    + alpha * mu_T
+    Sigma_T_alpha = (1.0 - alpha) * Sigma_S + alpha * Sigma_T
+
+    Z_src_syn = rng.multivariate_normal(mu_S, Sigma_S, size=n_output_samps_source)
+    Z_tgt_syn = rng.multivariate_normal(mu_T_alpha, Sigma_T_alpha, size=n_output_samps_target)
+
+    V_k = V[:, active_idx]   # source loadings for the selected active PCs
+    src_rec_scaled = Z_src_syn @ V_k.T + pca.mean_
+    tgt_rec_scaled = Z_tgt_syn @ V_k.T + pca.mean_
+
+    if snr is not None:
+        sig_var = src_rec_scaled.var(axis=0)
+        sig_var[sig_var < 1e-10] = 1e-10
+        noise_sd = np.sqrt(sig_var / snr)
+        src_rec_scaled += rng.normal(0.0, noise_sd, size=src_rec_scaled.shape)
+        tgt_rec_scaled += rng.normal(0.0, noise_sd, size=tgt_rec_scaled.shape)
+
+    src_rec = src_rec_scaled * feat_sd + feat_mean
+    tgt_rec = tgt_rec_scaled * feat_sd + feat_mean
+
+    synth_source = pd.DataFrame(src_rec, columns=common_cols)
+    synth_target = pd.DataFrame(tgt_rec, columns=common_cols)
+    return synth_source, synth_target, Z_src_syn, Z_tgt_syn
 
 
 def _pca_response_scores(scores: np.ndarray, complexity: str, index) -> pd.Series:
-    z1, z2, z3 = scores[:, 0], scores[:, 1], scores[:, 2]
-    z4 = scores[:, 3] if scores.shape[1] >= 4 else np.zeros(scores.shape[0])
-    if complexity == "nonlinear":
-        return pd.Series(
-            np.tanh(z1) + z1 * z2 ** 2 + np.sin(z2) * z3 + z3 * z4,
-            index=index,
-        )
-    return pd.Series(z1 + z1 * z2 + z2 * z3 + z3 * z4, index=index)
+    z1, z2, z3, z4 = scores[:, 0], scores[:, 1], scores[:, 2], scores[:, 3]
+    if complexity == "linear":
+        raw = z1 + 0.8 * z2 - 0.5 * z3 + 0.35 * z4
+    elif complexity == "interaction":
+        raw = z1 + 0.5 * z4 + 0.6 * np.tanh(z1 * z2) + 0.4 * np.tanh(z3 * z4)
+    elif complexity == "nonlinear":
+        raw = np.tanh(z1) + 0.5 * np.sin(z2) + 0.5 * np.tanh(z3 * z4) + 0.3 * np.sin(z4)
+    else:
+        raise ValueError(f"Unknown complexity: {complexity!r}")
+    return pd.Series(raw, index=index)
 
 
 def _add_response(
     features: pd.DataFrame,
     raw: pd.Series,
     is_categorical: bool,
-    threshold: float | None = None,
     snr: float | None = None,
-) -> tuple[pd.DataFrame, float | None]:
-    if snr is not None:
-        signal_var = float(np.var(raw.values))
-        noise_sd = np.sqrt(signal_var / snr) if signal_var > 0 else 0.0
-        raw = raw + np.random.normal(0, noise_sd, size=len(raw))
+    intercept: float = 0.0,
+    gamma: float = 1.0,
+) -> tuple[pd.DataFrame, None]:
     if is_categorical:
-        thresh = float(raw.quantile(0.5)) if threshold is None else threshold
-        response = (raw >= thresh).astype(np.int64)
+        # Logistic model: P(Y=1|η) = σ(intercept + gamma·η)
+        # gamma controls separation strength; intercept controls base rate.
+        # SNR noise is not applied — gamma already governs signal strength.
+        p = expit(intercept + gamma * raw.values)
+        response = pd.Series(
+            np.random.binomial(1, p).astype(np.int64), index=raw.index
+        )
     else:
+        if snr is not None:
+            signal_var = float(np.var(raw.values))
+            noise_sd = np.sqrt(signal_var / snr) if signal_var > 0 else 0.0
+            raw = raw + np.random.normal(0, noise_sd, size=len(raw))
         response = raw
-        thresh = None
     df = features.copy()
     df.insert(0, "response", response.values)
-    return df, thresh
+    return df, None
 
 
 def generate_pca_response(
@@ -195,50 +265,103 @@ def generate_pca_response(
     snr: float | None = None,
     variance_threshold: float = 0.80,
     min_components: int = 3,
-) -> tuple[pd.DataFrame, pd.DataFrame, float | None]:
+    source_scores: np.ndarray | None = None,
+    target_scores: np.ndarray | None = None,
+    intercept: float = 0.0,
+    gamma: float = 1.0,
+) -> tuple[pd.DataFrame, pd.DataFrame, None]:
     """Generate response variables for source and target datasets using PCA scores.
 
-    Fits PCA on source features and projects both domains onto the source PC space,
-    then applies a response formula to the scores.  The response is related to all
-    original features through the PCA loadings, mirroring the old LC-mixing approach
-    where each synthetic feature was a linear combination of all real features.
+    When source_scores and target_scores are provided (returned by
+    generate_synth_data_pca), they are used directly and no PCA refit is
+    performed.  Both domains therefore share the same source loading matrix
+    that was used to generate the features, so the response is coherent with
+    the synthetic features.
 
-    The categorical threshold is derived from source and applied to target so both
-    domains share the same decision boundary.  SNR noise is injected on the response
-    (y = f(scores) + eps) after the formula, before thresholding for categorical.
+    When scores are not provided, PCA is fitted on source_features and both
+    domains are projected onto the source PC space (legacy behaviour, kept for
+    backward compatibility).
+
+    The categorical threshold is derived from source and applied to target so
+    both domains share the same decision boundary.  SNR noise is injected on
+    the response (y = f(scores) + eps) after the formula, before thresholding.
 
     Args:
         source_features: Feature-only DataFrame for the source domain.
         target_features: Feature-only DataFrame for the target domain.
-        complexity: "linear" or "nonlinear" response formula.
-        is_categorical: If True, binarise response at the source median. Default False.
-        snr: Signal-to-noise ratio applied to the response. None adds no noise.
+        complexity: "linear", "interaction", or "nonlinear" response formula.
+        is_categorical: If True, generate binary labels via a logistic model
+            P(Y=1|η) = σ(intercept + gamma·η).
+        snr: Signal-to-noise ratio applied to continuous responses only.
         variance_threshold: Proportion of source variance the selected PCs must
-            explain. Default 0.80.
-        min_components: Minimum number of PCs to retain. Default 3.
+            explain (only used when scores are not provided). Default 0.80.
+        min_components: Minimum PCs to retain (only used when scores are not
+            provided). Default 3.
+        source_scores: Pre-computed source PC scores (n_source × n_comp) from
+            generate_synth_data_pca. When provided together with target_scores,
+            skips PCA refit entirely.
+        target_scores: Pre-computed target PC scores (n_target × n_comp) from
+            generate_synth_data_pca.
+        intercept: Log-odds intercept b0. Controls the base class rate when η=0.
+            Default 0.0 (balanced source when scores are zero-mean).
+        gamma: Log-odds slope γ. Controls separation strength; higher values give
+            cleaner class separation. Default 1.0 keeps probabilities away from
+            0/1 extremes even under large domain shift, reducing single-class
+            target outcomes.
 
     Returns:
-        (source_with_response, target_with_response, threshold) where threshold
-        is the categorical split point derived from source, or None for continuous.
+        (source_with_response, target_with_response, None). The third element is
+        always None and kept only for a consistent call signature.
     """
-    cumvar = np.cumsum(PCA().fit(source_features).explained_variance_ratio_)
-    K = min(
-        max(int(np.searchsorted(cumvar, variance_threshold)) + 1, min_components),
-        4,                           # formula uses at most z1..z4
-        source_features.shape[1],
-    )
-    pca_resp = PCA(n_components=K).fit(source_features)
+    if source_scores is not None and target_scores is not None:
+        K = min(source_scores.shape[1], 4)
+        src_sc = source_scores[:, :K]
+        tgt_sc = target_scores[:, :K]
+        if K < 4:
+            pad_cols = 4 - K
+            src_sc = np.hstack([src_sc, np.zeros((src_sc.shape[0], pad_cols))])
+            tgt_sc = np.hstack([tgt_sc, np.zeros((tgt_sc.shape[0], pad_cols))])
+    else:
+        cumvar = np.cumsum(PCA().fit(source_features).explained_variance_ratio_)
+        K = min(
+            max(int(np.searchsorted(cumvar, variance_threshold)) + 1, min_components),
+            4,                           # formula uses z1..z4
+            source_features.shape[1],
+        )
+        pca_resp = PCA(n_components=K).fit(source_features)
+        src_sc = pca_resp.transform(source_features)
+        tgt_sc = pca_resp.transform(target_features)
+        if K < 4:
+            pad_cols = 4 - K
+            src_sc = np.hstack([src_sc, np.zeros((src_sc.shape[0], pad_cols))])
+            tgt_sc = np.hstack([tgt_sc, np.zeros((tgt_sc.shape[0], pad_cols))])
 
-    src_scores = pca_resp.transform(source_features)
-    tgt_scores = pca_resp.transform(target_features)
+    # Z-score PC scores using source sample mean and SD.
+    # The sampled source scores have population mean 0 but non-zero sample mean
+    # due to finite-n randomness; subtracting the estimate is more principled.
+    src_mean_sc = src_sc.mean(axis=0)
+    src_sd_sc   = src_sc.std(axis=0, ddof=1)
+    src_sd_sc[src_sd_sc < 1e-10] = 1.0
+    src_sc = (src_sc - src_mean_sc) / src_sd_sc
+    tgt_sc = (tgt_sc - src_mean_sc) / src_sd_sc   # same mean+SD for both
 
-    src_raw = _pca_response_scores(src_scores, complexity, source_features.index)
-    tgt_raw = _pca_response_scores(tgt_scores, complexity, target_features.index)
+    src_raw = _pca_response_scores(src_sc, complexity, source_features.index)
+    tgt_raw = _pca_response_scores(tgt_sc, complexity, target_features.index)
 
-    source_df, threshold = _add_response(source_features, src_raw, is_categorical, snr=snr)
-    target_df, _         = _add_response(target_features, tgt_raw, is_categorical,
-                                          threshold=threshold, snr=snr)
-    return source_df, target_df, threshold
+    # Z-score latent signal using source sample mean and SD.
+    # Guarantees expit(intercept) = exact source class balance when intercept=0,
+    # and makes gamma = log-odds per source-SD of eta for all complexity types.
+    eta_mean = float(src_raw.mean())
+    eta_sd   = float(src_raw.std(ddof=1))
+    if eta_sd > 1e-10:
+        src_raw = (src_raw - eta_mean) / eta_sd
+        tgt_raw = (tgt_raw - eta_mean) / eta_sd
+
+    source_df, _ = _add_response(source_features, src_raw, is_categorical,
+                                  snr=snr, intercept=intercept, gamma=gamma)
+    target_df, _ = _add_response(target_features, tgt_raw, is_categorical,
+                                  snr=snr, intercept=intercept, gamma=gamma)
+    return source_df, target_df, None
 
 
 def generate_synth_data_multiomics_pca(
