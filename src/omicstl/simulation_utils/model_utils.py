@@ -1230,6 +1230,24 @@ def fit_rf_model(
         response=target_data.response,
     )
 
+    # Target-only RF — analogous to target_nosource for DL models.
+    # Trained on target data only, no source pretraining.
+    logger.info("Initializing target-only TransferForest model")
+    target_only_forest = TransferForest()
+    if is_classification:
+        target_only_forest.with_classification()
+    else:
+        target_only_forest.with_regression()
+    target_only_forest.train_models(
+        views=target_data.views,
+        response=target_data.response,
+    )
+    # update_models must be called so generate_predictions finds non-empty transfer_models
+    target_only_forest.update_models(
+        views=target_data.views,
+        response=target_data.response,
+    )
+
     if hasattr(data_container, "target_test_data") and data_container.target_test_data:
         logger.info(f"Found {len(data_container.target_test_data)} test datasets")
         for i, test_dataset in enumerate(data_container.target_test_data):
@@ -1308,6 +1326,59 @@ def fit_rf_model(
                     **test_metrics,
                 }
                 results = pd.concat([results, pd.DataFrame([test_row])], ignore_index=True)
+
+            # ---- Evaluate target-only forest on same test split
+            target_only_predictions = target_only_forest.generate_predictions(
+                views=test_data.views,
+                response=test_data.response,
+                validation_views=test_data.views,
+                validation_response=test_data.response,
+                ensemble_views=None,
+                ensemble_response=None,
+                integration_type=TransferForest.IntegrationType.NONE,
+            )
+
+            if not target_only_predictions:
+                logger.warning(f"Empty predictions from target-only RF for test data {i}")
+            else:
+                target_only_reorg = reorg_rf_predictions(target_only_predictions[0])
+
+                # Only the pred_source_full group exists (no transfer step was run).
+                # Relabel it as pred_target_full to distinguish it from the
+                # source-only predictions produced by the main transfer_forest.
+                pred_to = target_only_reorg.get("pred_source_full")
+                if pred_to is not None:
+                    if is_classification:
+                        predicted_classes = pred_to["pred_source"].to_numpy().astype(int)
+                        predicted_probs = pred_to.drop(columns="pred_source")
+                        if predicted_probs.shape[1] == 2:
+                            predicted_probs = predicted_probs.iloc[:, 1].to_numpy()
+                        else:
+                            predicted_probs = predicted_probs.to_numpy()
+                        target_only_metrics = calculate_metrics(
+                            true_values=test_data.response,
+                            predicted_values=predicted_classes,
+                            is_classification=is_classification,
+                            predicted_probs=predicted_probs,
+                        )
+                    else:
+                        predicted_values = pred_to["pred_source"].to_numpy()
+                        target_only_metrics = calculate_metrics(
+                            true_values=test_data.response,
+                            predicted_values=predicted_values,
+                            is_classification=is_classification,
+                        )
+
+                    target_only_row = {
+                        "scenario": scenario,
+                        "replicate": replicate,
+                        "split": f"test_{i}",
+                        "model": "rf",
+                        "model_type": "pred_target_full",
+                        "model_id": "target_nosource",
+                        **target_only_metrics,
+                    }
+                    results = pd.concat([results, pd.DataFrame([target_only_row])], ignore_index=True)
 
     logger.info(f"Model fitting completed. Results shape: {results.shape}")
     return results, transfer_forest

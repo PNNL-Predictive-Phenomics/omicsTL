@@ -1089,19 +1089,15 @@ dat_generator_pca <- function(
   n_target <- nrow(target_data)
   p        <- length(common_features)
 
-  # ── 1. Determine n_components per domain ──────────────────────────────────
-  # Each domain is capped at its own rank: min(n_domain - 1, p).
-  # This avoids the source dominating the shared PC space that occurred with
-  # joint SVD when n_source >> n_target.
+  # ── 1. Determine n_components ─────────────────────────────────────────────
+  # Only source rank matters — the shared loading matrix V_src is fitted on
+  # source data only; target is projected into the same space.
   max_comp_src <- min(n_source - 1L, p)
-  max_comp_tgt <- min(n_target - 1L, p)
 
   if (is.null(n_components)) {
     n_comp_src <- max_comp_src
-    n_comp_tgt <- max_comp_tgt
   } else {
     n_comp_src <- min(as.integer(n_components), max_comp_src)
-    n_comp_tgt <- min(as.integer(n_components), max_comp_tgt)
   }
 
   # ── 2. Mean-impute missing values ──────────────────────────────────────────
@@ -1117,45 +1113,46 @@ dat_generator_pca <- function(
   source_data <- impute_col_means(source_data)
   target_data <- impute_col_means(target_data)
 
-  # ── 3. Separate per-domain PCA ────────────────────────────────────────────
-  # Each domain is centred by its own mean and factored independently.
-  # This guarantees that V_src captures source covariance structure and
-  # V_tgt captures target covariance structure without either domain
-  # contaminating the other's PC basis.
+  # ── 3. Source-only centering and scaling ──────────────────────────────────
+  # Fit mean and SD on source only, then apply to both domains. After this,
+  # source is zero-mean unit-variance per feature. Target is expressed relative
+  # to the source distribution, so its nonzero PC-score mean encodes domain shift.
   source_mean_feat <- colMeans(source_data)
-  target_mean_feat <- colMeans(target_data)
+  source_sd_feat   <- apply(source_data, 2, sd)
+  source_sd_feat[source_sd_feat < 1e-10] <- 1  # guard constant features
 
-  source_c <- sweep(source_data, 2, source_mean_feat, "-")
-  target_c <- sweep(target_data, 2, target_mean_feat, "-")
+  source_cs <- sweep(sweep(source_data, 2, source_mean_feat, "-"), 2, source_sd_feat, "/")
+  target_cs <- sweep(sweep(target_data, 2, source_mean_feat, "-"), 2, source_sd_feat, "/")
 
-  svd_src <- svd(source_c, nu = n_comp_src, nv = n_comp_src)
+  # ── 4. PCA on scaled source — shared loading matrix ───────────────────────
+  # SVD is fitted on source only; V_src is the shared loading matrix used for
+  # both domains. Using the same V_src ensures source and target features live
+  # in the same latent space, which is required for coherent transfer learning.
+  svd_src <- svd(source_cs, nu = n_comp_src, nv = n_comp_src)
   V_src   <- svd_src$v   # p × n_comp_src
 
-  svd_tgt <- svd(target_c, nu = n_comp_tgt, nv = n_comp_tgt)
-  V_tgt   <- svd_tgt$v   # p × n_comp_tgt
+  # ── 5. Project both domains into source PC space ───────────────────────────
+  Z_source <- source_cs %*% V_src   # n_source × n_comp_src  (zero-mean by construction)
+  Z_target <- target_cs %*% V_src   # n_target × n_comp_src  (nonzero mean = domain shift)
 
-  # ── 4. Project each domain into its own PC space ───────────────────────────
-  Z_source <- source_c %*% V_src   # n_source × n_comp_src  (zero-mean by construction)
-  Z_target <- target_c %*% V_tgt   # n_target × n_comp_tgt  (zero-mean by construction)
-
-  # ── 5. Estimate per-domain Gaussians and sample ────────────────────────────
+  # ── 6. Estimate separate PC-score distributions ────────────────────────────
+  # Source scores are zero-mean; target scores have nonzero mean (mu_target)
+  # encoding the covariate shift between domains.
+  mu_target    <- colMeans(Z_target)
   Sigma_source <- cov(Z_source) + diag(regularization, n_comp_src)
-  Sigma_target <- cov(Z_target) + diag(regularization, n_comp_tgt)
+  Sigma_target <- cov(Z_target) + diag(regularization, n_comp_src)
 
+  # ── 7. Sample synthetic scores from each domain's distribution ────────────
   Z_synth_source <- MASS::mvrnorm(n_output_samps_source, mu = rep(0, n_comp_src), Sigma = Sigma_source)
-  Z_synth_target <- MASS::mvrnorm(n_output_samps_target, mu = rep(0, n_comp_tgt), Sigma = Sigma_target)
+  Z_synth_target <- MASS::mvrnorm(n_output_samps_target, mu = mu_target,           Sigma = Sigma_target)
 
   if (!is.matrix(Z_synth_source)) Z_synth_source <- matrix(Z_synth_source, nrow = 1)
   if (!is.matrix(Z_synth_target)) Z_synth_target <- matrix(Z_synth_target, nrow = 1)
 
-  # ── 6. Reconstruct in original feature space ──────────────────────────────
-  recon_source <- sweep(Z_synth_source %*% t(V_src), 2, source_mean_feat, "+")
-  recon_target <- sweep(Z_synth_target %*% t(V_tgt), 2, target_mean_feat, "+")
-
-  # ── 7. Restore variance/covariance lost by PCA truncation ─────────────────
-  # The PCA reconstruction captures only the top-k directions. Residual noise
-  # sampled from the real data's orthogonal complement restores the missing
-  # variance while preserving the directional (covariance) structure.
+  # ── 8. Reconstruct in scaled space, add residual noise, then unscale ──────
+  # All reconstruction work happens in the standardised space (source_cs /
+  # target_cs) so that V_src and the residual complement are consistent.
+  # Final sweep restores original feature units.
   add_pca_residual_noise <- function(synth_mat, real_mat, V, Sigma_pc, n_samps_out) {
     n_comps <- ncol(V)
     n_real  <- nrow(real_mat)
@@ -1181,10 +1178,17 @@ dat_generator_pca <- function(
     synth_mat + noise
   }
 
-  recon_source <- add_pca_residual_noise(recon_source, source_data, V_src,
-                                         Sigma_source, n_output_samps_source)
-  recon_target <- add_pca_residual_noise(recon_target, target_data, V_tgt,
-                                         Sigma_target, n_output_samps_target)
+  recon_source_cs <- Z_synth_source %*% t(V_src)
+  recon_target_cs <- Z_synth_target %*% t(V_src)
+
+  recon_source_cs <- add_pca_residual_noise(recon_source_cs, source_cs, V_src,
+                                            Sigma_source, n_output_samps_source)
+  recon_target_cs <- add_pca_residual_noise(recon_target_cs, target_cs, V_src,
+                                            Sigma_target, n_output_samps_target)
+
+  # Reverse source-fitted standardisation for both domains
+  recon_source <- sweep(sweep(recon_source_cs, 2, source_sd_feat, "*"), 2, source_mean_feat, "+")
+  recon_target <- sweep(sweep(recon_target_cs, 2, source_sd_feat, "*"), 2, source_mean_feat, "+")
 
   # ── 8. Generate output features ────────────────────────────────────────────
   if (is.null(n_output_features)) {
@@ -1263,15 +1267,15 @@ dat_generator_pca <- function(
   }
 
   list(
-    synth_source = data.frame(synth_source),
-    synth_target = data.frame(synth_target),
+    synth_source      = data.frame(synth_source),
+    synth_target      = data.frame(synth_target),
+    source_scores_syn = Z_synth_source,
+    target_scores_syn = Z_synth_target,
     pca_info = list(
       V_source         = V_src,
-      V_target         = V_tgt,
       source_mean_feat = source_mean_feat,
-      target_mean_feat = target_mean_feat,
+      source_sd_feat   = source_sd_feat,
       n_comp_source    = n_comp_src,
-      n_comp_target    = n_comp_tgt,
       lc_weights       = lc_weights
     )
   )
