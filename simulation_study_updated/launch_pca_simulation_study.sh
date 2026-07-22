@@ -32,7 +32,14 @@ source /share/apps/python/miniconda25.5.1/etc/profile.d/conda.sh
 module load R/4.4.3
 module load gcc/14.2.0
 
+eval "$(conda shell.bash hook)"
 conda activate omicstl
+
+# Path to omicstl R scripts (used by requirements.R to locate viRandomForests tarball)
+export OMICSTL_PKG_ROOT=/qfs/people/obir854/ppi_timed/repos/timed-hpc/src/omicstl
+
+# Personal R library (system library is read-only on this cluster)
+export R_LIBS_USER=~/R/x86_64-pc-linux-gnu-library/4.4
 
 # -----------------------------
 # SAFETY: confirm python + imports

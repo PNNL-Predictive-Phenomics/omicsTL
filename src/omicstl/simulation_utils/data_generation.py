@@ -282,9 +282,12 @@ def generate_pca_response(
     domains are projected onto the source PC space (legacy behaviour, kept for
     backward compatibility).
 
-    The categorical threshold is derived from source and applied to target so
-    both domains share the same decision boundary.  SNR noise is injected on
-    the response (y = f(scores) + eps) after the formula, before thresholding.
+    For categorical responses, source and target are each standardized by their
+    own distribution before the sigmoid threshold, so both domains maintain
+    balanced class proportions regardless of domain shift (alpha). Domain shift
+    manifests as feature covariate shift, not label imbalance. For continuous
+    responses, shared source standardization is used to keep both domains on
+    the same response scale.
 
     Args:
         source_features: Feature-only DataFrame for the source domain.
@@ -355,7 +358,18 @@ def generate_pca_response(
     eta_sd   = float(src_raw.std(ddof=1))
     if eta_sd > 1e-10:
         src_raw = (src_raw - eta_mean) / eta_sd
-        tgt_raw = (tgt_raw - eta_mean) / eta_sd
+        if is_categorical:
+            # For categorical: standardize target by its own distribution so
+            # class balance is preserved regardless of domain shift (alpha).
+            # Domain shift manifests as feature covariate shift, not label imbalance.
+            tgt_eta_mean = float(tgt_raw.mean())
+            tgt_eta_sd   = float(tgt_raw.std(ddof=1))
+            if tgt_eta_sd > 1e-10:
+                tgt_raw = (tgt_raw - tgt_eta_mean) / tgt_eta_sd
+        else:
+            # Continuous: shared source standardization keeps source and target
+            # response on the same scale for direct comparison.
+            tgt_raw = (tgt_raw - eta_mean) / eta_sd
 
     source_df, _ = _add_response(source_features, src_raw, is_categorical,
                                   snr=snr, intercept=intercept, gamma=gamma)
