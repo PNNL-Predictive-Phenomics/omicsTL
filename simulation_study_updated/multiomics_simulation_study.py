@@ -130,7 +130,8 @@ print(f"Total experiment conditions: {len(exp_conditions_df)}")
 param_grid = {
     "dropout":         [0.25, 0.5],
     "n_latent_dims":   [4],
-    "hidden_dim_base": [32],
+    "hidden_dim_base": [32, 64],   # 32→64 widens the fusion layer (MLP: concat 4×last_hidden → hidden_dim)
+    "z_dim_base":      [12, 32],   # VAE-only: per-view variational bottleneck before PoE
     "lr":              [0.01, 0.001],
     "source_epochs":   [500],
     "target_epochs":   [500],

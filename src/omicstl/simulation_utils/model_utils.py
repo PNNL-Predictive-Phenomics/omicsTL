@@ -51,8 +51,11 @@ class DataPartition:
         Multi-omics: splits self.features by view_column_groups and returns one DataFrame per view.
         """
         if self.view_column_groups is None:
-            return [self.features]
-        return [self.features[cols] for cols in self.view_column_groups.values()]
+            return [self.features.reset_index(drop=True)]
+        return [
+            self.features[cols].reset_index(drop=True)
+            for cols in self.view_column_groups.values()
+        ]
 
 
 @dataclass
