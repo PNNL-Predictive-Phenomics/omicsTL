@@ -438,6 +438,15 @@ def generate_synth_data_multiomics_latent(
     rng = np.random.default_rng(random_state)
     omic_names = list(source_omics.keys())
 
+    # ── 0. Align samples across omics (real data may have different sample sets) ──
+    src_common_samples = source_omics[omic_names[0]].index
+    tgt_common_samples = target_omics[omic_names[0]].index
+    for k in omic_names[1:]:
+        src_common_samples = src_common_samples.intersection(source_omics[k].index)
+        tgt_common_samples = tgt_common_samples.intersection(target_omics[k].index)
+    source_omics = {k: v.loc[src_common_samples] for k, v in source_omics.items()}
+    target_omics = {k: v.loc[tgt_common_samples] for k, v in target_omics.items()}
+
     # ── 1. Per-omic: find common features, compute source stats, standardize ──
     common_cols_per_omic: dict[str, list[str]] = {}
     src_stats: dict[str, tuple[np.ndarray, np.ndarray]] = {}
