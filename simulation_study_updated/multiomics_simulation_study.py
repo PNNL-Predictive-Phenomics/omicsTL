@@ -350,10 +350,19 @@ for i in range(nreps):
     except Exception as e:
         print(f"VAE failed for {vae_outfile}: {e}")
 
-    # ---- Fit RF
+    # ---- Fit RF (flat features: view_column_groups=None avoids per-view
+    # column-subset pd2df conversion failure for multi-omics conditions)
+    datasets_rf = DatasetContainer(
+        source_data=source_flat,
+        target_data=target_train,
+        target_ensemble_data=None,
+        target_test_data=[target_eval],
+        view_column_groups=None,
+    )
+    datasets_rf.set_response_column("response")
     random.seed(rep_seed)
     try:
-        rf_out, _ = fit_rf_model(datasets)
+        rf_out, _ = fit_rf_model(datasets_rf)
         annotate(rf_out).to_csv(rf_outfile, index=False)
     except Exception as e:
         print(f"RF failed for {rf_outfile}: {e}")
