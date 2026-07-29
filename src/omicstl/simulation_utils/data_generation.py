@@ -378,6 +378,164 @@ def generate_pca_response(
     return source_df, target_df, None
 
 
+def generate_synth_data_multiomics_latent(
+    source_omics: dict[str, pd.DataFrame],
+    target_omics: dict[str, pd.DataFrame],
+    n_output_samps_source: int,
+    n_output_samps_target: int,
+    n_shared_factors: int = 10,
+    shared_var_ratio: float = 0.6,
+    alpha: float = 0.0,
+    snr: float | None = None,
+    regularization: float = 1e-3,
+    random_state: int | None = None,
+    top_n_per_omic: int | None = None,
+) -> tuple[dict[str, pd.DataFrame], dict[str, pd.DataFrame], np.ndarray, np.ndarray]:
+    """Generate paired synthetic multi-omics source and target data via shared latent factors.
+
+    A joint PCA is fit on the standardized, concatenated source omics to learn K
+    shared latent factors that capture cross-omic correlations. Synthetic samples
+    are drawn from an alpha-interpolated Gaussian in factor space, then projected
+    back into each omic's feature space. Layer-specific noise (controlled by
+    shared_var_ratio) is added independently per omic so the cross-omic correlation
+    strength is directly tunable.
+
+    When a single omic is passed the function degrades gracefully to a per-omic
+    PCA simulation equivalent to generate_synth_data_pca.
+
+    Args:
+        source_omics: Dict mapping omic name to feature-only DataFrame (source domain).
+        target_omics: Dict mapping omic name to feature-only DataFrame (target domain).
+            Must share the same keys as source_omics.
+        n_output_samps_source: Number of synthetic source samples to generate.
+        n_output_samps_target: Number of synthetic target samples to generate.
+        n_shared_factors: Number of shared latent PCs learned from the concatenated
+            omics. Controls how many cross-omic directions drive the response.
+            Default 10.
+        shared_var_ratio: Fraction of total feature variance from the shared PCA
+            reconstruction vs. omic-specific noise. 0.9 = highly correlated layers;
+            0.3 = mostly independent layers. Default 0.6.
+        alpha: Domain-shift interpolation in [0, 1]. 0 = synthetic target drawn from
+            same distribution as source. Default 0.0.
+        snr: Optional feature-level signal-to-noise ratio applied on top of
+            shared+layer noise (same convention as generate_synth_data_pca).
+            Default None (no extra noise).
+        regularization: Ridge term for PC-score covariance matrices. Default 1e-3.
+        random_state: Seed for numpy RNG. Default None.
+        top_n_per_omic: If set, retain only the top-N most variable features
+            (by source variance) per omic before concatenation. Use this to
+            prevent high-dimensional omics (e.g. proteomics) from dominating
+            the joint PCA. Features are selected from the common source/target
+            columns, so target columns are filtered to match. Default None
+            (keep all common features).
+
+    Returns:
+        (synth_source, synth_target, Z_src_syn, Z_tgt_syn) where synth_source and
+        synth_target are dicts mapping omic name to a feature-only DataFrame, and
+        Z_src_syn / Z_tgt_syn are the sampled shared factor score arrays
+        (n_samples x n_shared_factors). Pass Z arrays directly to generate_pca_response.
+    """
+    rng = np.random.default_rng(random_state)
+    omic_names = list(source_omics.keys())
+
+    # ── 1. Per-omic: find common features, compute source stats, standardize ──
+    common_cols_per_omic: dict[str, list[str]] = {}
+    src_stats: dict[str, tuple[np.ndarray, np.ndarray]] = {}
+    src_scaled_parts: list[np.ndarray] = []
+    tgt_scaled_parts: list[np.ndarray] = []
+    col_slices: dict[str, tuple[int, int]] = {}
+    cursor = 0
+
+    for k in omic_names:
+        src_num = source_omics[k].select_dtypes(include="number")
+        tgt_num = target_omics[k].select_dtypes(include="number")
+        common = src_num.columns.intersection(tgt_num.columns).tolist()
+
+        # Optional: keep only the top-N most variable features (by source variance)
+        # to prevent high-feature-count omics from dominating the joint PCA.
+        if top_n_per_omic is not None and len(common) > top_n_per_omic:
+            src_var = src_num[common].var(axis=0, ddof=1)
+            common = src_var.nlargest(top_n_per_omic).index.tolist()
+        common_cols_per_omic[k] = common
+
+        src_arr = src_num[common].values.astype(float)
+        tgt_arr = tgt_num[common].values.astype(float)
+
+        mu_k = src_arr.mean(axis=0)
+        sd_k = src_arr.std(axis=0, ddof=1)
+        sd_k[sd_k < 1e-10] = 1.0
+        src_stats[k] = (mu_k, sd_k)
+
+        # Target standardized with SOURCE stats to put both domains on the same scale
+        src_scaled_parts.append((src_arr - mu_k) / sd_k)
+        tgt_scaled_parts.append((tgt_arr - mu_k) / sd_k)
+
+        col_slices[k] = (cursor, cursor + len(common))
+        cursor += len(common)
+
+    # ── 2. Concatenate all omics in standardized space ──────────────────────
+    src_full = np.hstack(src_scaled_parts)   # (n_src, total_p)
+    tgt_full = np.hstack(tgt_scaled_parts)   # (n_tgt, total_p)
+    n_src, total_p = src_full.shape
+
+    # ── 3. Fit shared PCA on concatenated source data ───────────────────────
+    K = min(n_shared_factors, n_src - 1, total_p)
+    pca = PCA(n_components=K).fit(src_full)
+    V_k = pca.components_.T                           # (total_p, K)
+
+    Z_src = pca.transform(src_full)                   # (n_src, K)
+    Z_tgt = (tgt_full - pca.mean_) @ V_k             # (n_tgt, K)
+
+    # ── 4. Gaussian parameters with alpha-interpolated target distribution ──
+    mu_S    = Z_src.mean(axis=0)
+    mu_T    = Z_tgt.mean(axis=0)
+    Sigma_S = np.atleast_2d(np.cov(Z_src, rowvar=False, ddof=1)) + regularization * np.eye(K)
+    Sigma_T = np.atleast_2d(np.cov(Z_tgt, rowvar=False, ddof=1)) + regularization * np.eye(K)
+
+    mu_T_alpha    = (1.0 - alpha) * mu_S    + alpha * mu_T
+    Sigma_T_alpha = (1.0 - alpha) * Sigma_S + alpha * Sigma_T
+
+    # ── 5. Sample synthetic latent factors ──────────────────────────────────
+    Z_src_syn = rng.multivariate_normal(mu_S, Sigma_S, size=n_output_samps_source)
+    Z_tgt_syn = rng.multivariate_normal(mu_T_alpha, Sigma_T_alpha, size=n_output_samps_target)
+
+    # ── 6. Reconstruct in standardized concatenated space ───────────────────
+    src_rec_scaled = Z_src_syn @ V_k.T + pca.mean_   # (n_out_src, total_p)
+    tgt_rec_scaled = Z_tgt_syn @ V_k.T + pca.mean_   # (n_out_tgt, total_p)
+
+    # ── 7. Split per omic, rescale, add layer-specific and SNR noise ────────
+    synth_source: dict[str, pd.DataFrame] = {}
+    synth_target: dict[str, pd.DataFrame] = {}
+
+    for k in omic_names:
+        start, end = col_slices[k]
+        mu_k, sd_k = src_stats[k]
+
+        # Back to original feature scale (shared component only)
+        X_src_shared = src_rec_scaled[:, start:end] * sd_k + mu_k
+        X_tgt_shared = tgt_rec_scaled[:, start:end] * sd_k + mu_k
+
+        # Layer-specific noise: calibrated so Var(shared)/Var(total) = shared_var_ratio
+        sig_var = np.var(X_src_shared, axis=0, ddof=1).clip(min=1e-10)
+        ratio   = float(np.clip(shared_var_ratio, 1e-6, 1.0 - 1e-6))
+        layer_noise_sd = np.sqrt(sig_var * (1.0 - ratio) / ratio)
+
+        X_src = X_src_shared + rng.normal(0.0, layer_noise_sd, size=X_src_shared.shape)
+        X_tgt = X_tgt_shared + rng.normal(0.0, layer_noise_sd, size=X_tgt_shared.shape)
+
+        # Additional feature-level SNR noise (same convention as generate_synth_data_pca)
+        if snr is not None:
+            total_sig_var = np.var(X_src, axis=0, ddof=1).clip(min=1e-10)
+            snr_noise_sd  = np.sqrt(total_sig_var / float(snr))
+            X_src += rng.normal(0.0, snr_noise_sd, size=X_src.shape)
+            X_tgt += rng.normal(0.0, snr_noise_sd, size=X_tgt.shape)
+
+        synth_source[k] = pd.DataFrame(X_src, columns=common_cols_per_omic[k])
+        synth_target[k] = pd.DataFrame(X_tgt, columns=common_cols_per_omic[k])
+
+    return synth_source, synth_target, Z_src_syn, Z_tgt_syn
+
+
 def generate_synth_data_multiomics_pca(
     source_omics: dict[str, pd.DataFrame],
     target_omics: dict[str, pd.DataFrame],

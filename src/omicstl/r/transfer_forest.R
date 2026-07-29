@@ -12,7 +12,10 @@ RANDOMFOREST_NTREE <- 500
 # Used by tryCatch retry blocks to recover from bootstrap sampling failures on
 # small datasets where the default sampsize causes sample.int(0, ...) errors.
 .rf_sampsize <- function(y) {
-  if (is.factor(y)) rep(as.integer(min(table(y))), nlevels(y)) else NULL
+  if (is.factor(y)) {
+    y <- droplevels(y)
+    rep(as.integer(min(table(y))), nlevels(y))
+  } else NULL
 }
 
 #' Train an m0 target only model
@@ -24,11 +27,18 @@ train_m0 <- function(
   y,
   x
 ) {
+  if (is.factor(y)) y <- droplevels(y)
   res_0 <- tryCatch(
     randomForest::randomForest(y=y, x=x, ntree=RANDOMFOREST_NTREE),
     error = function(e) {
-      randomForest::randomForest(y=y, x=x, ntree=RANDOMFOREST_NTREE,
-                                 sampsize=.rf_sampsize(y))
+      tryCatch(
+        randomForest::randomForest(y=y, x=x, ntree=RANDOMFOREST_NTREE,
+                                   sampsize=.rf_sampsize(y)),
+        error = function(e2) {
+          randomForest::randomForest(y=y, x=x, ntree=RANDOMFOREST_NTREE,
+                                     sampsize=.rf_sampsize(y), replace=TRUE)
+        }
+      )
     }
   )
 
@@ -46,15 +56,22 @@ train_m1 <- function(
   x,
   rf_source
 ) {
+  if (is.factor(y)) y <- droplevels(y)
   var_importance_source <- importancenew(rf_source, 2)
 
   res_1 <- tryCatch(
     viRandomForests::viRandomForests(y=y, x=x, fprob=var_importance_source,
                                      ntree=RANDOMFOREST_NTREE, keep.forest=TRUE, importance=TRUE),
     error = function(e) {
-      viRandomForests::viRandomForests(y=y, x=x, fprob=var_importance_source,
-                                       ntree=RANDOMFOREST_NTREE, keep.forest=TRUE, importance=TRUE,
-                                       sampsize=.rf_sampsize(y))
+      tryCatch(
+        viRandomForests::viRandomForests(y=y, x=x, fprob=var_importance_source,
+                                         ntree=RANDOMFOREST_NTREE, keep.forest=TRUE, importance=TRUE,
+                                         sampsize=.rf_sampsize(y)),
+        error = function(e2) {
+          randomForest::randomForest(y=y, x=x, ntree=RANDOMFOREST_NTREE,
+                                     sampsize=.rf_sampsize(y))
+        }
+      )
     }
   )
 
@@ -118,6 +135,7 @@ train_m3 <- function(
   x,
   rf_source
 ) {
+  if (is.factor(y)) y <- droplevels(y)
   feature_names <- rownames(rf_source$importance)
   num_features <- length(feature_names)
   pred_type <- ifelse(rf_source$type == "classification", "prob", "response")
@@ -131,10 +149,16 @@ train_m3 <- function(
                                        fprob=c(rep(1, num_features), rep(2, ncol(y_source_hat))),
                                        ntree=500, keep.forest=TRUE, importance=TRUE),
       error = function(e) {
-        viRandomForests::viRandomForests(y=y, x=cbind(x, y_source_hat=y_source_hat),
-                                         fprob=c(rep(1, num_features), rep(2, ncol(y_source_hat))),
-                                         ntree=500, keep.forest=TRUE, importance=TRUE,
-                                         sampsize=.rf_sampsize(y))
+        tryCatch(
+          viRandomForests::viRandomForests(y=y, x=cbind(x, y_source_hat=y_source_hat),
+                                           fprob=c(rep(1, num_features), rep(2, ncol(y_source_hat))),
+                                           ntree=500, keep.forest=TRUE, importance=TRUE,
+                                           sampsize=.rf_sampsize(y)),
+          error = function(e2) {
+            randomForest::randomForest(y=y, x=cbind(x, y_source_hat=y_source_hat),
+                                       ntree=500, sampsize=.rf_sampsize(y))
+          }
+        )
       }
     )
 
