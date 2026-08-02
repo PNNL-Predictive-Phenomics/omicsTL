@@ -234,7 +234,7 @@ for i in range(nreps):
                 n_shared_factors=N_SHARED_FACTORS,
                 shared_var_ratio=shared_var_ratio,
                 alpha=ALPHA,
-                snr=snr,
+                snr=None,
                 random_state=rep_seed,
                 top_n_per_omic=TOP_N_PER_OMIC,
             )
@@ -259,7 +259,7 @@ for i in range(nreps):
             target_features=dummy_tgt_feat,
             complexity=response_fn_complexity,
             is_categorical=is_cat,
-            snr=None,                    # SNR is already baked into features above
+            snr=snr,
             source_scores=Z_src_syn,
             target_scores=Z_tgt_syn,
             gamma=_CAT_GAMMA if is_cat else 1.0,
