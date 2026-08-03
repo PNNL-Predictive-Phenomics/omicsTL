@@ -28,7 +28,7 @@ USER = "obir854"
 DATA_DIR = f"/qfs/people/{USER}/ppi_timed/data"
 SOURCE_CSV = os.path.join(DATA_DIR, "source_dset.csv")
 TARGET_CSV = os.path.join(DATA_DIR, "target_transfer.csv")
-OUT_DIR = "/qfs/projects/ppi_timed/sim_results/results"
+OUT_DIR = "/qfs/projects/ppi_timed/sim_results_v2/results"
 os.makedirs(OUT_DIR, exist_ok=True)
 
 # -----------------------
@@ -51,7 +51,7 @@ source_sizes             = [100, 250, 500]
 target_sizes             = [10, 25, 50, 100]
 response_fn_options      = ["cont", "cat"]
 response_fn_complexities = ["linear", "nonlinear"]
-snr_values               = [1, 5]   # 1 = equal signal/noise, 5 = moderate signal
+snr_values               = [1, 3, 5]   # ceilings: R^2 = 0.50, 0.75, 0.83
 alpha_values             = [0.0, 0.5, 1.0]  # domain-shift interpolation
 
 exp_conditions = list(itertools.product(

@@ -4,12 +4,12 @@
 #SBATCH -J pca_sim
 
 # ---- OUTPUT LOGS ----
-#SBATCH -o /qfs/projects/ppi_timed/sim_results/out/%A_%a.stdout
-#SBATCH -e /qfs/projects/ppi_timed/sim_results/err/%A_%a.stderr
+#SBATCH -o /qfs/projects/ppi_timed/sim_results_v2/out/%A_%a.stdout
+#SBATCH -e /qfs/projects/ppi_timed/sim_results_v2/err/%A_%a.stderr
 
 # ---- ARRAY SETTINGS ----
-# 288 conditions total: 3 source_sizes x 4 target_sizes x 2 response types x 2 complexities x 2 snr levels x 3 alpha levels
-#SBATCH --array=1-288
+# 432 conditions total: 3 source_sizes x 4 target_sizes x 2 response types x 2 complexities x 3 snr levels x 3 alpha levels
+#SBATCH --array=1-432
 
 # -----------------------------
 # INPUT ARGUMENTS
