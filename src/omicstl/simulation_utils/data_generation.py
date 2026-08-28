@@ -91,6 +91,74 @@ def generate_synth_data(
     return pd.DataFrame(df2pd(result_data.rx2("data"))), df2pd(result_data.rx2("lc_info")), result_data.rx2("cut_point")
 
 
+def _sample_latent(
+    n: int,
+    mu: np.ndarray,
+    Sigma: np.ndarray,
+    ref_scores: np.ndarray,
+    latent_distribution,
+    rng: np.random.Generator,
+    regularization: float = 1e-3,
+) -> np.ndarray:
+    """Draw n synthetic latent factor vectors.
+
+    Args:
+        n: number of samples to draw.
+        mu: desired mean vector (K,), already alpha-interpolated.
+        Sigma: desired covariance matrix (K, K), already alpha-interpolated.
+        ref_scores: real observed PC scores (n_real, K) used as the empirical
+            reference distribution. Always pass the source scores for stability
+            when n_target is small.
+        latent_distribution: sampling strategy.
+            "gaussian"  — multivariate normal N(mu, Sigma).
+            "empirical" — kernel density estimate on ref_scores, affine-transformed
+                          so the output has exactly mean mu and covariance Sigma,
+                          preserving the empirical shape (skewness, kurtosis).
+            callable    — user-supplied sampler with signature
+                          (n, mu, Sigma, ref_scores, rng) -> ndarray of shape (n, K).
+        rng: numpy default_rng instance for reproducibility.
+        regularization: ridge term added to the empirical covariance before
+            Cholesky decomposition. Default 1e-3.
+
+    Returns:
+        ndarray of shape (n, K).
+    """
+    K = mu.shape[0]
+
+    if latent_distribution == "gaussian":
+        return rng.multivariate_normal(mu, Sigma, size=n)
+
+    elif latent_distribution == "empirical":
+        from scipy.stats import gaussian_kde
+        kde = gaussian_kde(ref_scores.T)
+        seed_int = int(rng.integers(0, 2**31))
+        raw = kde.resample(n, seed=seed_int).T          # (n, K)
+        raw_c = raw - raw.mean(axis=0)                  # centre
+        C_hat = np.cov(raw_c.T, ddof=1) + regularization * np.eye(K)
+        L_C = np.linalg.cholesky(C_hat)                # lower chol of empirical cov
+        L_S = np.linalg.cholesky(Sigma)                # lower chol of target cov
+        # Whiten then re-colour: z = L_S @ L_C^{-1} @ raw_c.T + mu
+        W = np.linalg.solve(L_C, raw_c.T).T            # (n, K): whitened samples
+        return W @ L_S.T + mu                           # (n, K): target distribution
+
+    elif callable(latent_distribution):
+        result = np.asarray(
+            latent_distribution(n, mu, Sigma, ref_scores, rng), dtype=float
+        )
+        if result.shape != (n, K):
+            raise ValueError(
+                f"latent_distribution callable returned shape {result.shape}; "
+                f"expected ({n}, {K})."
+            )
+        return result
+
+    else:
+        raise ValueError(
+            "latent_distribution must be 'gaussian', 'empirical', or a callable; "
+            f"got {type(latent_distribution).__name__!r}."
+        )
+
+
 def generate_synth_data_pca(
     source_data: pd.DataFrame,
     target_data: pd.DataFrame,
@@ -104,6 +172,7 @@ def generate_synth_data_pca(
     regularization: float = 1e-3,
     snr: float | None = None,
     random_state: int | None = None,
+    latent_distribution: str | typing.Callable = "gaussian",
 ) -> tuple[pd.DataFrame, pd.DataFrame, np.ndarray, np.ndarray]:
     """Generate paired synthetic source and target data via Gaussian PCA simulation.
 
@@ -136,6 +205,18 @@ def generate_synth_data_pca(
             Gaussian noise is injected so that noise_var_j = signal_var_j / snr.
             None (default) adds no noise.
         random_state: Seed for numpy RNG. Default None.
+        latent_distribution: Distribution used to sample synthetic latent factor
+            scores. Options:
+            "gaussian"  (default) — multivariate normal N(mu, Sigma) fitted to
+                the empirical source PC scores; target uses alpha-interpolated
+                parameters.
+            "empirical" — kernel density estimate on the real source PC scores,
+                affine-transformed to match the desired mean and covariance while
+                preserving the empirical shape (skewness, heavy tails, etc.).
+            callable    — user-supplied sampler called as
+                ``f(n, mu, Sigma, ref_scores, rng) -> ndarray of shape (n, K)``
+                where mu and Sigma are the alpha-interpolated parameters and
+                ref_scores are the real source PC scores.
 
     Returns:
         (synth_source, synth_target, source_scores_syn, target_scores_syn) where
@@ -195,8 +276,10 @@ def generate_synth_data_pca(
     mu_T_alpha    = (1.0 - alpha) * mu_S    + alpha * mu_T
     Sigma_T_alpha = (1.0 - alpha) * Sigma_S + alpha * Sigma_T
 
-    Z_src_syn = rng.multivariate_normal(mu_S, Sigma_S, size=n_output_samps_source)
-    Z_tgt_syn = rng.multivariate_normal(mu_T_alpha, Sigma_T_alpha, size=n_output_samps_target)
+    Z_src_syn = _sample_latent(n_output_samps_source, mu_S, Sigma_S,
+                               Z_src_k, latent_distribution, rng, regularization)
+    Z_tgt_syn = _sample_latent(n_output_samps_target, mu_T_alpha, Sigma_T_alpha,
+                               Z_src_k, latent_distribution, rng, regularization)
 
     V_k = V[:, active_idx]   # source loadings for the selected active PCs
     src_rec_scaled = Z_src_syn @ V_k.T + pca.mean_
@@ -217,16 +300,57 @@ def generate_synth_data_pca(
     return synth_source, synth_target, Z_src_syn, Z_tgt_syn
 
 
-def _pca_response_scores(scores: np.ndarray, complexity: str, index) -> pd.Series:
+_DEFAULT_LINEAR_WEIGHTS    = (1.0, 0.8, -0.5, 0.35)
+_DEFAULT_NONLINEAR_WEIGHTS = (1.0, 0.5,  0.5,  0.3)
+_DEFAULT_INTERACTION_WEIGHTS = (1.0, 0.5, 0.6, 0.4)
+
+
+def _pca_response_scores(
+    scores: np.ndarray,
+    complexity: str,
+    index,
+    response_weights: tuple[float, ...] | None = None,
+) -> pd.Series:
+    """Compute the latent response signal from PC scores.
+
+    Args:
+        scores: PC score matrix (n, >= 4).
+        complexity: "linear", "interaction", or "nonlinear".
+        index: pandas index for the returned Series.
+        response_weights: Four scalar weights (w1, w2, w3, w4) applied to the
+            response formula for the given complexity. Controls the relative
+            contribution of each shared PC dimension to the response signal.
+            Weights decay with PC rank by default (reflecting the variance-
+            explained ordering of PCA) and include mixed signs to prevent the
+            response being collinear with any single latent direction.
+            Pass None to use the published simulation defaults:
+              linear      -> (1.0,  0.8, -0.5, 0.35)
+              nonlinear   -> (1.0,  0.5,  0.5,  0.3)
+              interaction -> (1.0,  0.5,  0.6,  0.4)
+    """
     z1, z2, z3, z4 = scores[:, 0], scores[:, 1], scores[:, 2], scores[:, 3]
+
     if complexity == "linear":
-        raw = z1 + 0.8 * z2 - 0.5 * z3 + 0.35 * z4
+        w = response_weights if response_weights is not None else _DEFAULT_LINEAR_WEIGHTS
+        if len(w) != 4:
+            raise ValueError(f"response_weights must have 4 elements for 'linear'; got {len(w)}.")
+        raw = w[0]*z1 + w[1]*z2 + w[2]*z3 + w[3]*z4
+
     elif complexity == "interaction":
-        raw = z1 + 0.5 * z4 + 0.6 * np.tanh(z1 * z2) + 0.4 * np.tanh(z3 * z4)
+        w = response_weights if response_weights is not None else _DEFAULT_INTERACTION_WEIGHTS
+        if len(w) != 4:
+            raise ValueError(f"response_weights must have 4 elements for 'interaction'; got {len(w)}.")
+        raw = w[0]*z1 + w[1]*z4 + w[2]*np.tanh(z1 * z2) + w[3]*np.tanh(z3 * z4)
+
     elif complexity == "nonlinear":
-        raw = np.tanh(z1) + 0.5 * np.sin(z2) + 0.5 * np.tanh(z3 * z4) + 0.3 * np.sin(z4)
+        w = response_weights if response_weights is not None else _DEFAULT_NONLINEAR_WEIGHTS
+        if len(w) != 4:
+            raise ValueError(f"response_weights must have 4 elements for 'nonlinear'; got {len(w)}.")
+        raw = w[0]*np.tanh(z1) + w[1]*np.sin(z2) + w[2]*np.tanh(z3 * z4) + w[3]*np.sin(z4)
+
     else:
         raise ValueError(f"Unknown complexity: {complexity!r}")
+
     return pd.Series(raw, index=index)
 
 
@@ -238,19 +362,21 @@ def _add_response(
     intercept: float = 0.0,
     gamma: float = 1.0,
 ) -> tuple[pd.DataFrame, None]:
+    if snr is not None:
+        signal_var = float(np.var(raw.values))
+        noise_sd = np.sqrt(signal_var / snr) if signal_var > 0 else 0.0
+        raw = raw + np.random.normal(0, noise_sd, size=len(raw))
+
     if is_categorical:
-        # Logistic model: P(Y=1|η) = σ(intercept + gamma·η)
-        # gamma controls separation strength; intercept controls base rate.
-        # SNR noise is not applied — gamma already governs signal strength.
+        # Logistic model: P(Y=1|η) = σ(intercept + gamma·(η + ε))
+        # SNR noise is applied to η before the sigmoid so that SNR has the
+        # same interpretation for continuous and categorical outcomes:
+        # SNR = Var(f(Z)) / Var(ε), setting the ceiling on predictive performance.
         p = expit(intercept + gamma * raw.values)
         response = pd.Series(
             np.random.binomial(1, p).astype(np.int64), index=raw.index
         )
     else:
-        if snr is not None:
-            signal_var = float(np.var(raw.values))
-            noise_sd = np.sqrt(signal_var / snr) if signal_var > 0 else 0.0
-            raw = raw + np.random.normal(0, noise_sd, size=len(raw))
         response = raw
     df = features.copy()
     df.insert(0, "response", response.values)
@@ -269,6 +395,7 @@ def generate_pca_response(
     target_scores: np.ndarray | None = None,
     intercept: float = 0.0,
     gamma: float = 1.0,
+    response_weights: tuple[float, ...] | None = None,
 ) -> tuple[pd.DataFrame, pd.DataFrame, None]:
     """Generate response variables for source and target datasets using PCA scores.
 
@@ -311,6 +438,11 @@ def generate_pca_response(
             cleaner class separation. Default 1.0 keeps probabilities away from
             0/1 extremes even under large domain shift, reducing single-class
             target outcomes.
+        response_weights: Four scalar weights (w1, w2, w3, w4) controlling the
+            relative contribution of each shared PC dimension to the response
+            signal. Pass None to use the published simulation defaults (see
+            _pca_response_scores). Weights decay with PC rank by default,
+            reflecting the variance-explained ordering of PCA.
 
     Returns:
         (source_with_response, target_with_response, None). The third element is
@@ -348,8 +480,8 @@ def generate_pca_response(
     src_sc = (src_sc - src_mean_sc) / src_sd_sc
     tgt_sc = (tgt_sc - src_mean_sc) / src_sd_sc   # same mean+SD for both
 
-    src_raw = _pca_response_scores(src_sc, complexity, source_features.index)
-    tgt_raw = _pca_response_scores(tgt_sc, complexity, target_features.index)
+    src_raw = _pca_response_scores(src_sc, complexity, source_features.index, response_weights)
+    tgt_raw = _pca_response_scores(tgt_sc, complexity, target_features.index, response_weights)
 
     # Z-score latent signal using source sample mean and SD.
     # Guarantees expit(intercept) = exact source class balance when intercept=0,
@@ -390,6 +522,7 @@ def generate_synth_data_multiomics_latent(
     regularization: float = 1e-3,
     random_state: int | None = None,
     top_n_per_omic: int | None = None,
+    latent_distribution: str | typing.Callable = "gaussian",
 ) -> tuple[dict[str, pd.DataFrame], dict[str, pd.DataFrame], np.ndarray, np.ndarray]:
     """Generate paired synthetic multi-omics source and target data via shared latent factors.
 
@@ -428,6 +561,20 @@ def generate_synth_data_multiomics_latent(
             the joint PCA. Features are selected from the common source/target
             columns, so target columns are filtered to match. Default None
             (keep all common features).
+        latent_distribution: Distribution used to sample synthetic shared latent
+            factor scores. Options:
+            "gaussian"  (default) — multivariate normal N(mu, Sigma) fitted to
+                the empirical source shared-factor scores; target uses
+                alpha-interpolated parameters.
+            "empirical" — kernel density estimate on the real source shared-factor
+                scores, affine-transformed to match the desired mean and covariance
+                while preserving the empirical distributional shape. Using source
+                scores as the KDE reference is intentional: target training sets
+                are often too small for reliable high-dimensional KDE.
+            callable    — user-supplied sampler called as
+                ``f(n, mu, Sigma, ref_scores, rng) -> ndarray of shape (n, K)``
+                where mu and Sigma are the alpha-interpolated parameters and
+                ref_scores are the real source shared-factor scores.
 
     Returns:
         (synth_source, synth_target, Z_src_syn, Z_tgt_syn) where synth_source and
@@ -505,8 +652,10 @@ def generate_synth_data_multiomics_latent(
     Sigma_T_alpha = (1.0 - alpha) * Sigma_S + alpha * Sigma_T
 
     # ── 5. Sample synthetic latent factors ──────────────────────────────────
-    Z_src_syn = rng.multivariate_normal(mu_S, Sigma_S, size=n_output_samps_source)
-    Z_tgt_syn = rng.multivariate_normal(mu_T_alpha, Sigma_T_alpha, size=n_output_samps_target)
+    Z_src_syn = _sample_latent(n_output_samps_source, mu_S, Sigma_S,
+                               Z_src, latent_distribution, rng, regularization)
+    Z_tgt_syn = _sample_latent(n_output_samps_target, mu_T_alpha, Sigma_T_alpha,
+                               Z_src, latent_distribution, rng, regularization)
 
     # ── 6. Reconstruct in standardized concatenated space ───────────────────
     src_rec_scaled = Z_src_syn @ V_k.T + pca.mean_   # (n_out_src, total_p)

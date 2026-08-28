@@ -1,6 +1,6 @@
 #!/bin/bash
 #SBATCH -A PPI_TIMED
-#SBATCH -t 0-04:00:00
+#SBATCH -t 0-08:00:00
 #SBATCH -J multiomics_sim
 
 # ---- OUTPUT LOGS ----
@@ -16,7 +16,7 @@
 # -----------------------------
 # INPUT ARGUMENTS
 # -----------------------------
-NREPS=10     # replicates per condition
+NREPS=5      # replicates per condition
 SETNO=$1     # set number for multi-batch runs (pass as first arg)
 
 echo "SLURM JOB ID: $SLURM_JOB_ID"
